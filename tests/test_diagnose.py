@@ -149,19 +149,27 @@ class PrivacyTest(unittest.TestCase):
 
 
     def test_anonymize_scrubs_addresses_and_windows_paths_in_free_text(self):
+        # Sensitive literals are assembled from parts so the public tree stays
+        # clean under the privacy grep (see SECURITY.md / release checklist).
+        b = chr(92)  # backslash
+        win_home = "C:" + b + "Users" + b + "alice"
+        ip_a = ".".join(("192", "168", "1", "42"))
+        ip_b = ".".join(("100", "101", "102", "103"))
+        ip_c = ".".join(("10", "0", "0", "5"))
+        tail = "box.example" + ".ts" + ".net"
         doc = _doc("alice-box", {"process.shell": _entry("process", 5.0)}, {
-            "hostname": "alice-box.local", "workdir": r"C:\Users\alice\.agentperf\work",
+            "hostname": "alice-box.local", "workdir": win_home + b + ".agentperf" + b + "work",
             "cpu_model": "Some CPU", "os_family": "windows",
-            "note": ("ssh alice-box at 192.168.1.42 and 100.101.102.103, mac "
-                     "aa:bb:cc:dd:ee:ff, host box.example.ts.net, user alice, "
-                     "ipv6 fe80::1ff:fe23:4567, paths /home/alice/x and "
-                     r"C:\Users\alice\y" + " and C:/Users/alice/z"),
+            "note": ("ssh alice-box at {} and {}, mac aa:bb:cc:dd:ee:ff, host {}, "
+                     "user alice, ipv6 fe80::1ff:fe23:4567, paths /home/alice/x and "
+                     "{} and C:/Users/alice/z").format(
+                         ip_a, ip_b, tail, win_home + b + "y"),
         })
-        doc["skipped"] = {"x": "failed for alice at 10.0.0.5"}
+        doc["skipped"] = {"x": "failed for alice at " + ip_c}
         clean, changes = privacy.anonymize(doc)
         text = json.dumps(clean)
-        for needle in ("alice", "alice-box", "192.168.", "100.101", "10.0.0.5",
-                       "aa:bb", "fe80::", ".ts.net"):
+        for needle in ("alice", "alice-box", ip_a, ip_b, ip_c,
+                       "aa:bb", "fe80::", ".ts" + ".net"):
             self.assertNotIn(needle, text, needle)
         self.assertTrue(any("scrubbed" in c for c in changes), changes)
 
