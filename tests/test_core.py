@@ -65,6 +65,30 @@ class RegistryTest(unittest.TestCase):
         self.assertFalse(bench.scored)
 
 
+class GitProbeTest(unittest.TestCase):
+    def test_unresponsive_git_skips_instead_of_hanging(self):
+        import stat
+        from agentperf.benches.git import Repo
+        from agentperf.registry import Skip
+        tmp = tempfile.mkdtemp()
+        try:
+            fake = os.path.join(tmp, "git")
+            with open(fake, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 1\n")
+            os.chmod(fake, os.stat(fake).st_mode | stat.S_IXUSR)
+
+            class _Ctx:
+                workdir = tmp
+
+                def need(self, *names):
+                    return (fake,)
+
+            with self.assertRaises(Skip):
+                Repo(_Ctx(), tmp)
+        finally:
+            shutil.rmtree(tmp)
+
+
 class RunnerLockTest(unittest.TestCase):
     def test_second_run_in_same_workdir_is_refused(self):
         from agentperf import runner

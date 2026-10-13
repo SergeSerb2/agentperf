@@ -10,8 +10,8 @@ from __future__ import annotations
 import os
 import shutil
 
-from ..registry import bench
-from ..util import now, rmtree, run
+from ..registry import Skip, bench
+from ..util import now, rmtree, run, run_text
 
 DIRTY_COUNT = 100
 COMMIT_COUNT = 50
@@ -24,6 +24,12 @@ _FLAGS = ["-c", "user.name=agentperf", "-c", "user.email=agentperf@example.inval
 class Repo:
     def __init__(self, ctx, path: str):
         (self.git,) = ctx.need("git")
+        # On macOS without the Command Line Tools, /usr/bin/git is a shim that
+        # can stall on a GUI install prompt. Probe once with a short timeout
+        # so git tests skip cleanly instead of hanging the run.
+        if not run_text([self.git, "--version"], timeout=15):
+            raise Skip("git did not answer --version (on macOS, install the "
+                       "Command Line Tools: xcode-select --install)")
         self.path = path
         empty = os.path.join(ctx.workdir, "empty.gitconfig")
         if not os.path.exists(empty):

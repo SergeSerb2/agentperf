@@ -214,6 +214,12 @@ def cmd_doctor(args) -> int:
             free, MIN_FREE_GB))
     if not found.get("git"):
         checks.append("git not found: all git tests will skip and coverage will drop")
+    else:
+        from .util import run_text
+        if not run_text([found["git"], "--version"], timeout=15):
+            checks.append("git is present but did not answer --version; on macOS without "
+                          "the Command Line Tools the /usr/bin/git shim can stall on a GUI "
+                          "prompt (fix: xcode-select --install). Git tests will skip.")
     if not found.get("rg"):
         checks.append("ripgrep not found: rg tests will skip (or run with --fetch-tools)")
     if system.get("workdir_on_windows_drive"):
