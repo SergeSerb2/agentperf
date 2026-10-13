@@ -70,11 +70,11 @@ def run_suite(workdir: str, profile: str = "standard", label: Optional[str] = No
     try:
         return _run_locked(workdir, profile, label, only, exclude, fetch, clean, log)
     finally:
-        rmtree(os.path.join(workdir, "scratch"))
         try:
             os.remove(lock)
         except OSError:
             pass
+        rmtree(os.path.join(workdir, "scratch"))
 
 
 def _run_locked(workdir: str, profile: str, label: Optional[str],
