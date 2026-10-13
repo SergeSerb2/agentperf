@@ -39,17 +39,49 @@ def _selected(bench_id: str, only: Optional[List[str]], exclude: Optional[List[s
     return not (exclude and hit(exclude))
 
 
+LOCK_NAME = ".agentperf-run.lock"
+
+
+def _acquire_lock(workdir: str) -> str:
+    """One run per workdir: concurrent runs would share the corpus and scratch."""
+    path = os.path.join(workdir, LOCK_NAME)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise SystemExit(
+            "Another agentperf run is using {} (lock file {} exists). "
+            "Wait for it to finish, use a different --workdir, or delete the "
+            "lock file if no run is active.".format(workdir, path))
+    os.write(fd, "{}\n".format(os.getpid()).encode("ascii"))
+    os.close(fd)
+    return path
+
+
 def run_suite(workdir: str, profile: str = "standard", label: Optional[str] = None,
               only: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
               fetch: bool = False, clean: bool = False,
               log: Callable[[str], None] = print) -> Dict[str, object]:
-    reps_mult, max_warmup, budget_mult = PROFILES[profile]
     os.makedirs(workdir, exist_ok=True)
     free_gb = shutil.disk_usage(workdir).free / 1e9
     if free_gb < MIN_FREE_GB:
         raise SystemExit("Only {:.1f} GB free at {}; agentperf needs {:.1f} GB.".format(
             free_gb, workdir, MIN_FREE_GB))
+    lock = _acquire_lock(workdir)
+    try:
+        return _run_locked(workdir, profile, label, only, exclude, fetch, clean, log)
+    finally:
+        rmtree(os.path.join(workdir, "scratch"))
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
 
+
+def _run_locked(workdir: str, profile: str, label: Optional[str],
+                only: Optional[List[str]], exclude: Optional[List[str]],
+                fetch: bool, clean: bool,
+                log: Callable[[str], None]) -> Dict[str, object]:
+    reps_mult, max_warmup, budget_mult = PROFILES[profile]
     started = datetime.datetime.now(datetime.timezone.utc)
     t_start = now()
     if fetch:
@@ -66,6 +98,7 @@ def run_suite(workdir: str, profile: str = "standard", label: Optional[str] = No
     chosen = [b for b in REGISTRY if _selected(b.id, only, exclude)]
     for index, b in enumerate(chosen, 1):
         if b.platforms and ctx.os_family not in b.platforms:
+            skipped[b.id] = "not on this platform"
             continue
         prefix = "[{:>2}/{}] {:<24}".format(index, len(chosen), b.id)
         try:

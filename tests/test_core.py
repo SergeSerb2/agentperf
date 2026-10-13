@@ -43,6 +43,34 @@ class CorpusTest(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+    def test_damaged_corpus_cache_is_regenerated(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            root = os.path.join(tmp, "c")
+            c = corpus.Corpus(root).ensure(log=lambda m: None)
+            victim = c.path(c.files[123])
+            os.remove(victim)
+            healed = corpus.Corpus(root).ensure(log=lambda m: None)
+            self.assertTrue(os.path.exists(victim))
+            self.assertEqual(healed.fixture_hash, c.fixture_hash)
+        finally:
+            shutil.rmtree(tmp)
+
+
+class RunnerLockTest(unittest.TestCase):
+    def test_second_run_in_same_workdir_is_refused(self):
+        from agentperf import runner
+        tmp = tempfile.mkdtemp()
+        try:
+            lock = runner._acquire_lock(tmp)
+            with self.assertRaises(SystemExit):
+                runner._acquire_lock(tmp)
+            os.remove(lock)
+            runner._acquire_lock(tmp)  # free again after removal
+        finally:
+            shutil.rmtree(tmp)
+
+
 class StatsTest(unittest.TestCase):
     def test_median_and_percentile(self):
         self.assertEqual(util.median([3, 1, 2]), 2)
