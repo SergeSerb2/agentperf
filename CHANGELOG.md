@@ -6,6 +6,50 @@ fingerprint all match, against the same reference file. Version strings never
 decide comparability; reports warn when two files differ on any part. A suite
 change that moves scores bumps the minor version and says what moved.
 
+## 0.4.0 - 2026-10-13
+
+Teach coding agents to run agentperf well. **Scores do not move in this
+release**: the suite stays 0.3.0, the measurement fingerprint is unchanged,
+and every bundled profile scores exactly as in 0.3.0 (WSL2 anchor 1000,
+Windows native 103, M1 Pro 398, M5 Pro 408). Scores from 0.4.0 compare
+directly with 0.3.0 scores.
+
+- **An Agent Skill and an operator guide.** `skills/agentperf/` holds a
+  short procedural skill plus references for multi-machine runs, Windows
+  and WSL2, honest result reading, troubleshooting, and safety. The same
+  copy ships inside the package, so pip, pipx, and `.pyz` users all get it.
+  `docs/AGENTS-GUIDE.md` is the full guide behind the skill.
+- **`agentperf skill install` / `path` / `uninstall`.** One command copies
+  the skill into the Claude Code (`~/.claude/skills`), Codex
+  (`~/.codex/skills`), and shared (`~/.agents/skills`) folders, or into a
+  repo with `--project`. Each copy carries a hash manifest; a copy you
+  edited is never replaced or removed without `--force`, and your extra
+  files survive a forced install. The repo is also a Claude Code plugin
+  marketplace (`/plugin marketplace add SergeSerb2/agentperf`, then
+  `/plugin install agentperf`).
+- **Several machines in one command.** `remote` takes many hosts and runs
+  them strictly one after another, in order. `--wsl HOST:DISTRO` adds a
+  WSL run on a Windows host, so `remote my-pc --wsl my-pc:Ubuntu` measures
+  native Windows, then WSL2, never both at once. `--compare fleet.html`
+  writes one comparison of the fetched results, `--quick`, `--runs`, and
+  `--workdir` forward to every host, and `--mode doctor` preflights each
+  host without benchmarking. One failed host no longer blocks the rest;
+  the summary records each host's outcome. A WSL run's label now names its
+  distro (`my-pc-wsl-ubuntu`); two runs that would share a label are
+  refused before anything starts.
+- **Machine-readable output.** `run`, `report`, `compare`, `doctor`,
+  `remote`, and the `skill` commands accept `--json=PATH` (or `--json=-`
+  for stdout, with progress on stderr). Summaries carry the score, the
+  verdict, top causes, per-host outcomes, and file paths, so agents and
+  scripts never scrape human text. Exit codes are now a stable, documented
+  contract (0 success, 1 failed or refused, 2 bad input, 130 interrupted;
+  `doctor` health lives in its `ok` field). `docs/result-schema.md`
+  documents every summary and result field. Summaries are not anonymized;
+  only `share` output is fit to post.
+- **Repo notes for agents.** Root `AGENTS.md` (rules for working on the
+  code), a `CLAUDE.md` pointer, and `llms.txt`. The README gains a short
+  "Use it with your coding agent" section.
+
 ## 0.3.0 - 2026-10-13
 
 Fixes from two independent reviews of 0.2.2 (a code-and-math review and a

@@ -10,6 +10,9 @@ Standard library only. Supports Python 3.8 through 3.14 on macOS, Linux
 # them separately so an old result never looks like the running program.
 SUITE_VERSION = "0.3.0"
 SCHEMA_VERSION = 1
+# Fallback for checkouts and .pyz files, which carry no dist metadata.
+# Keep this equal to the version in pyproject.toml.
+_PACKAGE_VERSION_FALLBACK = "0.4.0"
 
 
 def _package_version() -> str:
@@ -18,7 +21,7 @@ def _package_version() -> str:
 
         return metadata.version("agentperf")
     except Exception:  # running from a checkout or a .pyz without dist info
-        return SUITE_VERSION
+        return _PACKAGE_VERSION_FALLBACK
 
 
 PACKAGE_VERSION = _package_version()

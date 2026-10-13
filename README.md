@@ -155,7 +155,8 @@ real machines that scored worse than they should have.
 | `agentperf compare a.json b.json --html compare.html` | Puts results from several machines side by side. |
 | `agentperf references` | Lists the bundled reference machines. |
 | `agentperf share result.json` | Writes an anonymized copy for posting (read it once first). |
-| `agentperf remote <host>` | Runs the benchmark on another machine over SSH. |
+| `agentperf remote <host>...` | Runs the benchmark on other machines over SSH, one at a time. Add `--compare fleet.html` for one side-by-side report. |
+| `agentperf skill install` | Teaches your coding agent to run agentperf well (see below). |
 | `agentperf live` | Runs real Claude Code and Codex sessions. This costs tokens. |
 
 Add `--fetch-tools` when you compare machines. It downloads a pinned ripgrep
@@ -173,10 +174,12 @@ macOS hosts, Windows hosts that use PowerShell over SSH, and WSL distros on a
 Windows host.
 
 ```sh
-agentperf remote my-mac --fetch-tools --clean
-agentperf remote my-pc --fetch-tools
+agentperf remote my-mac linux-box --fetch-tools --clean
+agentperf remote my-pc --wsl my-pc:Ubuntu --fetch-tools --compare fleet.html
 agentperf remote my-pc --wsl Ubuntu --fetch-tools
 ```
+
+Hosts run one after another, in the order you give them. The second line benchmarks native Windows first, then WSL2 on the same PC, and writes one comparison. Never run the two at the same time; they would measure each other.
 
 `remote` works from any install, including `agentperf.pyz`.
 
@@ -202,6 +205,28 @@ Live runs use your own accounts and cost tokens. Read
 before you start one.
 
 </details>
+
+## Use it with your coding agent
+
+Your coding agent can run agentperf for you: check each machine first, benchmark them one at a time, and explain where your agents will feel fastest. Teach it once with the bundled skill:
+
+```sh
+agentperf skill install
+```
+
+That copies the skill into the Claude Code, Codex, and shared agent skill folders. Nothing you have edited there is ever overwritten without `--force`. In Claude Code you can install the same skill as a plugin instead:
+
+```text
+/plugin marketplace add SergeSerb2/agentperf
+/plugin install agentperf
+```
+
+Then just ask, for example:
+
+- "Benchmark this machine with agentperf and explain the result."
+- "Compare my Mac, my Linux box, and my Windows PC (native and WSL2) with agentperf. Tell me where to run my agents."
+
+The agent will confirm which machines you mean before it connects anywhere. The full instructions it follows are in [docs/AGENTS-GUIDE.md](https://github.com/SergeSerb2/agentperf/blob/main/docs/AGENTS-GUIDE.md). If you script agentperf yourself, `run`, `report`, `compare`, `doctor`, and `remote` all take `--json=summary.json` for machine-readable output, and the exit codes are stable. See [docs/result-schema.md](https://github.com/SergeSerb2/agentperf/blob/main/docs/result-schema.md).
 
 ## How it works
 

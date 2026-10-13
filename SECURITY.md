@@ -23,7 +23,19 @@
   only if Node is missing. Both are stored in `~/.agentperf/tools`; PATH is
   never modified. Without the flag, nothing is downloaded.
 - **`remote`** copies agentperf itself as one `.pyz` to `~/.agentperf` on a
-  host you name over SSH and runs it with that host's Python.
+  host you name over SSH and runs it with that host's Python. Several hosts
+  run one after another. Result files come back over SSH; the host copy is
+  deleted after a good fetch. The `.pyz` stays in `~/.agentperf` for later
+  runs.
+- **`skill install`** copies the bundled Agent Skill text files into agent
+  skill folders (`~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`,
+  or the project forms with `--project`). It writes a small manifest with
+  file hashes and refuses to replace a copy you edited unless you pass
+  `--force`. It installs no code that runs on its own; the files are
+  instructions your agent reads.
+- **`--json` summaries** are plain JSON views of a result. They are **not**
+  anonymized: they carry labels, file paths, and findings from the raw
+  result. Keep them as private as the result itself.
 - **`live` spends tokens.** It starts real Claude Code / Codex sessions with
   your existing login on a throwaway generated repo. It is never run by
   default, and it prints the session count and sandbox modes before it

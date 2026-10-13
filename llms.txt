@@ -1,0 +1,22 @@
+# agentperf
+
+> agentperf measures how well a computer serves AI coding agents. It times the local work behind tool calls (shell starts, files, search, git, compute, pipes), scores the machine against a reference (AgentMark; reference = 1000), and explains the score. Standard library only, Python 3.8+, macOS, Linux, WSL2, and Windows. Install with `pipx install agentperf`.
+
+## Run it for a user
+
+- [Operator guide for coding agents](https://github.com/SergeSerb2/agentperf/blob/main/docs/AGENTS-GUIDE.md): discovery, preflight, run choice, run order, Windows and WSL2, honest explaining, troubleshooting.
+- [Agent Skill](https://github.com/SergeSerb2/agentperf/blob/main/skills/agentperf/SKILL.md): short procedure. Install it with `agentperf skill install`.
+- [Result and summary fields](https://github.com/SergeSerb2/agentperf/blob/main/docs/result-schema.md): result JSON fields, `--json` summaries, stable exit codes (0 success, 1 failed or refused, 2 bad input, 130 interrupted).
+
+## Understand it
+
+- [README](https://github.com/SergeSerb2/agentperf/blob/main/README.md): quick start, scores, commands.
+- [Methodology](https://github.com/SergeSerb2/agentperf/blob/main/docs/METHODOLOGY.md): tests, weights, statistics, scoring.
+- [FAQ](https://github.com/SergeSerb2/agentperf/blob/main/docs/FAQ.md): common objections and the Windows gap conditions.
+- [Security and privacy](https://github.com/SergeSerb2/agentperf/blob/main/SECURITY.md): what each command touches; only `share` output is safe to post.
+
+## Work on the code
+
+- [AGENTS.md](https://github.com/SergeSerb2/agentperf/blob/main/AGENTS.md): repo rules for coding agents (stdlib only, Python 3.8, scores must not move by accident, tests, ship checklist).
+- [Contributing](https://github.com/SergeSerb2/agentperf/blob/main/CONTRIBUTING.md): how to add a benchmark or a diagnosis rule.
+- [Changelog](https://github.com/SergeSerb2/agentperf/blob/main/CHANGELOG.md): releases and whether scores move.

@@ -1,0 +1,13 @@
+{
+  "name": "agentperf",
+  "version": "0.4.0",
+  "description": "Benchmark machines for AI coding agents and explain the results. Ships the agentperf Agent Skill: local and SSH remote runs, Windows and WSL2, and honest reading of AgentMark scores.",
+  "author": {
+    "name": "agentperf contributors",
+    "url": "https://github.com/SergeSerb2/agentperf"
+  },
+  "homepage": "https://github.com/SergeSerb2/agentperf",
+  "repository": "https://github.com/SergeSerb2/agentperf",
+  "license": "MIT",
+  "keywords": ["benchmark", "ai-agents", "coding-agents", "performance"]
+}

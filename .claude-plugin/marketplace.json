@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "agentperf",
+  "description": "Benchmark how well a computer serves AI coding agents, and explain why.",
+  "owner": {
+    "name": "agentperf contributors",
+    "url": "https://github.com/SergeSerb2/agentperf"
+  },
+  "plugins": [
+    {
+      "name": "agentperf",
+      "description": "Teach your agent to benchmark your machines with agentperf and explain where agents run fastest.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

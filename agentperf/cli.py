@@ -1,4 +1,13 @@
-"""Command line: agentperf run | compare | report | reference | remote | list | live."""
+"""Command line: run, compare, report, doctor, remote, skill, and friends.
+
+Exit codes are stable across versions (see docs/result-schema.md):
+0 = success, 1 = the command ran but the work failed or was refused
+(empty run, remote failure, skill conflict, live task failure),
+2 = usage or bad input (unknown flags, missing or malformed files,
+incompatible results), 130 = interrupted with Ctrl-C.
+``doctor`` exits 0 when the check itself ran; read its ``ok`` field
+with ``--json`` for machine problems.
+"""
 
 from __future__ import annotations
 
@@ -103,6 +112,22 @@ def _say(message: str = "") -> None:
         pass
 
 
+def _say_err(message: str = "") -> None:
+    """Progress on stderr, for runs whose stdout carries a JSON summary."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def _add_json(parser) -> None:
+    parser.add_argument("--json", nargs="?", const="-", default=None, metavar="PATH",
+                        help="write a machine-readable summary as JSON: to PATH, "
+                             "or to stdout with '-' or no value (progress then goes "
+                             "to stderr). Put --json after file arguments, or use "
+                             "--json=PATH, so a file name is not taken as PATH.")
+
+
 def _all_bundled_references():
     docs = []
     data = _read_bundled("index.json")
@@ -121,6 +146,8 @@ def cmd_run(args) -> int:
     from .runner import default_workdir, run_suite
     if getattr(args, "quick", False):
         args.profile = "quick"
+    json_stdout = getattr(args, "json", None) == "-"
+    say = _say_err if json_stdout else _say
     workdir = os.path.abspath(os.path.expanduser(args.workdir or default_workdir()))
     exclude = _split(args.exclude) or []
     if args.no_network:
@@ -128,24 +155,33 @@ def cmd_run(args) -> int:
     docs = []
     for i in range(args.runs):
         if args.runs > 1:
-            _say("\n=== run {} of {}".format(i + 1, args.runs))
+            say("\n=== run {} of {}".format(i + 1, args.runs))
         docs.append(run_suite(workdir, profile=args.profile, label=args.label, only=_split(args.only),
                               exclude=exclude, fetch=args.fetch_tools and i == 0,
-                              clean=args.clean and i == args.runs - 1, log=_say))
+                              clean=args.clean and i == args.runs - 1, log=say))
     result = combine_runs(docs) if len(docs) > 1 else docs[0]
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     safe_label = "".join(c if c.isalnum() or c in "._-" else "-" for c in str(result["label"]))
     out = args.out or "agentperf-{}-{}.json".format(safe_label.strip("-") or "result", stamp)
     _write_json(result, out)
-    _say("")
     reference = _load_reference(args.ref)
-    _say(run_report(result, reference))
-    _say("\nSaved {}".format(os.path.abspath(out)))
     html_path = getattr(args, "html", None)
+    written_html = None
     if html_path and reference:
         from .report_html import write_report
         write_report(result, reference, html_path, references=_all_bundled_references())
-        _say("Report {}".format(os.path.abspath(html_path)))
+        written_html = html_path
+    if not json_stdout:
+        _say("")
+        _say(run_report(result, reference))
+        _say("\nSaved {}".format(os.path.abspath(out)))
+        if written_html:
+            _say("Report {}".format(os.path.abspath(written_html)))
+    if getattr(args, "json", None):
+        from .summary import emit, result_summary
+        doc = result_summary(result, reference, result_path=out, html_path=written_html)
+        doc["command"] = "run"
+        emit(doc, args.json, say=_say_err if json_stdout else _say)
     return 0
 
 
@@ -153,14 +189,22 @@ def cmd_report(args) -> int:
     result = scoring.load(args.result)
     reference = _load_reference(args.ref)
     if reference is None:
-        print("No reference found. Pass --ref with a reference name or result JSON.")
+        print("error: no reference found. Pass --ref with a reference name or result JSON.",
+              file=sys.stderr)
         return 2
-    from .report_text import run_report
-    print(run_report(result, reference))
+    json_stdout = getattr(args, "json", None) == "-"
     html_path = args.html or (os.path.splitext(args.result)[0] + "-report.html")
     from .report_html import write_report
     write_report(result, reference, html_path, references=_all_bundled_references())
-    print("\nWrote {}".format(os.path.abspath(html_path)))
+    if not json_stdout:
+        from .report_text import run_report
+        print(run_report(result, reference))
+        print("\nWrote {}".format(os.path.abspath(html_path)))
+    if getattr(args, "json", None):
+        from .summary import emit, result_summary
+        doc = result_summary(result, reference, result_path=args.result, html_path=html_path)
+        doc["command"] = "report"
+        emit(doc, args.json, say=_say_err if json_stdout else print)
     return 0
 
 
@@ -213,24 +257,12 @@ def cmd_doctor(args) -> int:
         if parent == probe_dir:
             break
         probe_dir = parent
-    print("agentperf {} (suite {}) on {} (Python {})".format(
-        PACKAGE_VERSION, SUITE_VERSION, os_family(), sys.version.split()[0]))
     found = tools.find_tools()
-    for name in sorted(found):
-        shown = _tilde(found[name]) if found[name] else "NOT FOUND (related tests will skip)"
-        print("  tool {:<10} {}".format(name, shown))
     system = env.collect(probe_dir)
-    for key in ("cpu_model", "os_version", "logical_cpus", "ram_gb", "fs_type",
-                "disk_free_gb", "power_source", "power_plan", "governor",
-                "defender_realtime", "dev_drive", "rotational", "raid_resync",
-                "workdir_on_windows_drive", "workdir_in_icloud"):
-        if system.get(key) not in (None, "", [], False):
-            print("  {:<26} {}".format(key, system[key]))
-    if system.get("security_agents"):
-        print("  {:<26} {}".format("security_agents", ", ".join(system["security_agents"])))
-    if system.get("load_avg_start"):
-        print("  {:<26} {}".format("load_avg", system["load_avg_start"]))
-    print("Workdir: {} (scores measure this disk; put repos on the same disk)".format(_tilde(workdir)))
+    probe_keys = ("cpu_model", "os_version", "logical_cpus", "ram_gb", "fs_type",
+                  "disk_free_gb", "power_source", "power_plan", "governor",
+                  "defender_realtime", "dev_drive", "rotational", "raid_resync",
+                  "workdir_on_windows_drive", "workdir_in_icloud")
     checks = []
     free = system.get("disk_free_gb")
     if free is not None and free < MIN_FREE_GB:
@@ -265,13 +297,48 @@ def cmd_doctor(args) -> int:
                       "you plan to compare".format(load[0], cpus))
     if system.get("power_source") == "battery":
         checks.append("running on battery: plug in power for stable numbers")
-    if checks:
-        print("Checks:")
-        for check in checks:
-            print("  - " + check)
-    else:
-        print("Checks: no problems found.")
-    print("Next: agentperf run --quick --no-network   (fast smoke run)")
+    json_stdout = getattr(args, "json", None) == "-"
+    if not json_stdout:
+        print("agentperf {} (suite {}) on {} (Python {})".format(
+            PACKAGE_VERSION, SUITE_VERSION, os_family(), sys.version.split()[0]))
+        for name in sorted(found):
+            shown = _tilde(found[name]) if found[name] else "NOT FOUND (related tests will skip)"
+            print("  tool {:<10} {}".format(name, shown))
+        for key in probe_keys:
+            if system.get(key) not in (None, "", [], False):
+                print("  {:<26} {}".format(key, system[key]))
+        if system.get("security_agents"):
+            print("  {:<26} {}".format("security_agents", ", ".join(system["security_agents"])))
+        if system.get("load_avg_start"):
+            print("  {:<26} {}".format("load_avg", system["load_avg_start"]))
+        print("Workdir: {} (scores measure this disk; put repos on the same disk)".format(_tilde(workdir)))
+        if checks:
+            print("Checks:")
+            for check in checks:
+                print("  - " + check)
+        else:
+            print("Checks: no problems found.")
+        print("Next: agentperf run --quick --no-network   (fast smoke run)")
+    if getattr(args, "json", None):
+        from .summary import SUMMARY_VERSION, emit
+        emit({
+            "command": "doctor",
+            "summary_version": SUMMARY_VERSION,
+            "package_version": PACKAGE_VERSION,
+            "suite_version": SUITE_VERSION,
+            "os_family": os_family(),
+            "python": sys.version.split()[0],
+            "workdir": _tilde(workdir),
+            # Doctor exits 0 when the check itself ran; agents must read
+            # `ok` and `checks`, not the exit code, for machine problems.
+            "ok": not checks,
+            "checks": checks,
+            "tools": {k: (_tilde(v) if v else None) for k, v in sorted(found.items())},
+            "missing_tools": sorted(k for k, v in found.items() if not v),
+            "system": {k: system.get(k) for k in probe_keys
+                       if system.get(k) not in (None, "", [], False)},
+            "next": "agentperf run --quick --no-network",
+        }, args.json, say=_say_err if json_stdout else print)
     return 0
 
 
@@ -279,16 +346,25 @@ def cmd_compare(args) -> int:
     from .report_text import compare_report
     results = [scoring.load(p) for p in args.results]
     reference = _load_reference(args.ref)
+    json_stdout = getattr(args, "json", None) == "-"
     if reference is None:
         reference = results[0]
-        print("No reference given; using {} as the reference.\n".format(reference["label"]))
+        if not json_stdout:
+            print("No reference given; using {} as the reference.\n".format(reference["label"]))
     weights = scoring.equal_category_weights() if getattr(args, "weights", "default") == "equal" else None
-    print(compare_report(results, reference, category_weights=weights))
     if args.html:
         from .report_html import write_html
         write_html(results, reference, args.html, estimates=args.estimates, live=args.live,
                    category_weights=weights)
-        print("\nWrote {}".format(os.path.abspath(args.html)))
+    if not json_stdout:
+        print(compare_report(results, reference, category_weights=weights))
+        if args.html:
+            print("\nWrote {}".format(os.path.abspath(args.html)))
+    if getattr(args, "json", None):
+        from .summary import compare_summary, emit
+        emit(compare_summary(results, reference, category_weights=weights,
+                             html_path=args.html),
+             args.json, say=_say_err if json_stdout else print)
     return 0
 
 
@@ -419,7 +495,122 @@ def cmd_list(args) -> int:
 
 def cmd_remote(args) -> int:
     from .remote import run_remote
-    return run_remote(args)
+    code, summary = run_remote(args)
+    json_stdout = getattr(args, "json", None) == "-"
+    say = _say_err if json_stdout else print
+    compare_path = getattr(args, "compare", None)
+    if compare_path:
+        fetched = summary.get("results") or []
+        if not fetched:
+            print("error: --compare needs at least one fetched result, but no run "
+                  "produced one.", file=sys.stderr)
+            code = code or 1
+        else:
+            results = [scoring.load(p) for p in fetched]  # type: ignore[union-attr]
+            reference = _load_reference(getattr(args, "ref", None)) or results[0]
+            from .report_html import write_html
+            from .report_text import compare_report
+            write_html(results, reference, compare_path)
+            summary["compare_html"] = os.path.abspath(compare_path)
+            from .summary import compare_summary
+            cmp_doc = compare_summary(results, reference, html_path=compare_path)
+            summary["comparison"] = cmp_doc
+            if not json_stdout:
+                print("\n" + compare_report(results, reference))
+                print("\nWrote {}".format(os.path.abspath(compare_path)))
+    if getattr(args, "json", None):
+        from .summary import emit
+        emit(summary, args.json, say=say)
+    return code
+
+
+def _skill_project_dir(args) -> Optional[str]:
+    value = getattr(args, "project", None)
+    if value is None or value is False:
+        return None
+    return os.path.abspath(os.path.expanduser(value if value is not True else "."))
+
+
+def cmd_skill_install(args) -> int:
+    from . import skill as skill_mod
+    from .summary import SUMMARY_VERSION, emit
+    project = _skill_project_dir(args)
+    targets = skill_mod.resolve_targets(getattr(args, "target", None), project)
+    entries = []
+    json_stdout = getattr(args, "json", None) == "-"
+    for target in targets:
+        dest = skill_mod.target_path(target, project=project)
+        status, message = skill_mod.install_one(dest, force=args.force)
+        entries.append({"target": target, "path": dest, "status": status,
+                        "message": message})
+        if not json_stdout:
+            print("{}: {} - {}".format(target, status, message))
+            print("  {}".format(dest))
+    if getattr(args, "json", None):
+        emit({"command": "skill install", "summary_version": SUMMARY_VERSION,
+              "package_version": PACKAGE_VERSION, "project": project,
+              "targets": entries}, args.json,
+             say=_say_err if json_stdout else print)
+    return 1 if any(e["status"] == "refused" for e in entries) else 0
+
+
+def cmd_skill_uninstall(args) -> int:
+    from . import skill as skill_mod
+    from .summary import SUMMARY_VERSION, emit
+    project = _skill_project_dir(args)
+    targets = skill_mod.resolve_targets(getattr(args, "target", None), project)
+    entries = []
+    json_stdout = getattr(args, "json", None) == "-"
+    for target in targets:
+        dest = skill_mod.target_path(target, project=project)
+        status, message = skill_mod.uninstall_one(dest, force=args.force)
+        entries.append({"target": target, "path": dest, "status": status,
+                        "message": message})
+        if not json_stdout:
+            print("{}: {} - {}".format(target, status, message))
+            print("  {}".format(dest))
+    if getattr(args, "json", None):
+        emit({"command": "skill uninstall", "summary_version": SUMMARY_VERSION,
+              "package_version": PACKAGE_VERSION, "project": project,
+              "targets": entries}, args.json,
+             say=_say_err if json_stdout else print)
+    return 1 if any(e["status"] == "refused" for e in entries) else 0
+
+
+def cmd_skill_path(args) -> int:
+    from . import skill as skill_mod
+    from .summary import SUMMARY_VERSION, emit
+    project = _skill_project_dir(args)
+    requested = getattr(args, "target", None)
+    json_stdout = getattr(args, "json", None) == "-"
+    if requested or project:
+        targets = skill_mod.resolve_targets(requested, project)
+        entries = []
+        for target in targets:
+            dest = skill_mod.target_path(target, project=project)
+            state, detail = skill_mod.inspect(dest)
+            entries.append({"target": target, "path": dest, "state": state,
+                            "installed_version": detail.get("installed_version")})
+            if not json_stdout:
+                print("{}: {} ({})".format(target, dest, state))
+        if getattr(args, "json", None):
+            emit({"command": "skill path", "summary_version": SUMMARY_VERSION,
+                  "package_version": PACKAGE_VERSION, "project": project,
+                  "bundled": skill_mod.bundled_location(),
+                  "files": skill_mod.SKILL_FILES, "targets": entries}, args.json,
+                 say=_say_err if json_stdout else print)
+        return 0
+    location = skill_mod.bundled_location()
+    if not json_stdout:
+        print(location)
+        for rel in skill_mod.SKILL_FILES:
+            print("  {}".format(rel))
+    if getattr(args, "json", None):
+        emit({"command": "skill path", "summary_version": SUMMARY_VERSION,
+              "package_version": PACKAGE_VERSION, "bundled": location,
+              "files": skill_mod.SKILL_FILES}, args.json,
+             say=_say_err if json_stdout else print)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -445,6 +636,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--ref", help="reference name or result JSON to score against")
     r.add_argument("--runs", type=_positive_int, default=1,
                    help="repeat the suite and keep the median of the run medians (single runs vary ~10-15%%)")
+    _add_json(r)
     r.set_defaults(func=cmd_run)
 
     c = sub.add_parser("compare", help="compare result files against a reference")
@@ -455,6 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="category weights: default, or equal for a sensitivity check")
     c.add_argument("--estimates", help="JSON file of modelled (not measured) systems for the HTML report")
     c.add_argument("--live", nargs="*", default=[], help="live-run JSON files to add to the HTML report")
+    _add_json(c)
     c.set_defaults(func=cmd_compare)
 
     f = sub.add_parser("reference", help="store result files of one machine as a named reference profile")
@@ -481,6 +674,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("result")
     rp.add_argument("--ref", help="reference name or result JSON (default: bundled default)")
     rp.add_argument("--html", help="HTML report path (default: <result>-report.html)")
+    _add_json(rp)
     rp.set_defaults(func=cmd_report)
 
     sh = sub.add_parser("share", help="write an anonymized result that is safe to post in public")
@@ -494,23 +688,63 @@ def build_parser() -> argparse.ArgumentParser:
 
     dc = sub.add_parser("doctor", help="fast pre-flight check (tools, disk, probes); runs no benchmarks")
     dc.add_argument("--workdir", help="work directory to probe (default ~/.agentperf/work)")
+    _add_json(dc)
     dc.set_defaults(func=cmd_doctor)
 
-    rm = sub.add_parser("remote", help="run the suite on another machine over SSH",
-                        epilog="Arguments after -- are passed to the remote command.")
-    rm.add_argument("host", help="ssh host alias")
-    rm.add_argument("--wsl", metavar="DISTRO", help="run inside this WSL distro on a Windows host")
+    rm = sub.add_parser(
+        "remote", help="run the suite on other machines over SSH, one at a time",
+        epilog="Hosts run strictly one after another, in the order given "
+               "(never run native Windows beside its own WSL2: they share "
+               "one PC). Arguments after -- go to the remote command. "
+               "Examples:\n"
+               "  agentperf remote my-mac linux-box --quick --fetch-tools\n"
+               "  agentperf remote my-pc --wsl my-pc:Ubuntu --fetch-tools --compare fleet.html\n"
+               "  agentperf remote my-pc --wsl Ubuntu   (single host, WSL only)",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    rm.add_argument("hosts", nargs="+", metavar="HOST",
+                    help="ssh host alias(es), run in order")
+    rm.add_argument("--wsl", action="append", default=[], metavar="[HOST:]DISTRO",
+                    help="add a WSL run: HOST:DISTRO (repeatable), or a bare DISTRO "
+                         "when exactly one host is given")
     rm.add_argument("--python", help="remote Python command (default: python3, or python on Windows)")
-    rm.add_argument("--label")
+    rm.add_argument("--label", help="result label (single run only; default: from the host name)")
     rm.add_argument("--profile", choices=["quick", "standard"], default="standard")
+    rm.add_argument("--quick", action="store_true", help="same as --profile quick on every host")
+    rm.add_argument("--runs", type=_positive_int, default=1,
+                    help="repeat the suite on each host and keep the median of medians")
+    rm.add_argument("--workdir", help="work directory on each host (default: ~/.agentperf/work there)")
     rm.add_argument("--fetch-tools", action="store_true")
     rm.add_argument("--clean", action="store_true")
     rm.add_argument("--no-network", action="store_true")
     rm.add_argument("--only")
     rm.add_argument("--out-dir", default="results")
-    rm.add_argument("--mode", choices=["run", "live"], default="run",
-                    help="run the system suite (default) or live agent sessions")
+    rm.add_argument("--ref", help="reference for --compare (default: bundled default)")
+    rm.add_argument("--compare", metavar="FILE.html",
+                    help="after the runs, write one comparison report of the fetched results")
+    rm.add_argument("--mode", choices=["run", "live", "doctor"], default="run",
+                    help="run the system suite (default), live agent sessions, or doctor")
+    _add_json(rm)
     rm.set_defaults(func=cmd_remote, extra=[])
+
+    sk = sub.add_parser("skill", help="install or locate the bundled Agent Skill for coding agents")
+    sk_sub = sk.add_subparsers(dest="skill_command")
+    for verb, fn, text in (
+            ("install", cmd_skill_install,
+             "copy the bundled skill into agent skill folders"),
+            ("uninstall", cmd_skill_uninstall, "remove a skill copy agentperf installed"),
+            ("path", cmd_skill_path, "show where the bundled or installed skill lives")):
+        sp = sk_sub.add_parser(verb, help=text)
+        sp.add_argument("--target", action="append", choices=["claude", "codex", "agents"],
+                        help="skill folder to use (repeatable; default: all three for "
+                             "user installs, claude+agents with --project)")
+        sp.add_argument("--project", nargs="?", const=".", default=None, metavar="DIR",
+                        help="use DIR/.claude/skills and DIR/.agents/skills "
+                             "(default DIR: current directory) instead of the user folders")
+        if verb != "path":
+            sp.add_argument("--force", action="store_true",
+                            help="replace or remove a copy that was edited (extra files are kept)")
+        _add_json(sp)
+        sp.set_defaults(func=fn)
 
     try:
         from .live import add_parser as add_live_parser
@@ -531,10 +765,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     if extra:
         args.extra = extra
     if not getattr(args, "func", None):
-        parser.print_help()
+        if argv and argv[0] == "skill":
+            print("error: `agentperf skill` needs a subcommand: "
+                  "install, path, or uninstall (try `agentperf skill install --help`)",
+                  file=sys.stderr)
+        else:
+            parser.print_help()
         return 2
     try:
         return int(args.func(args) or 0)
+    except SystemExit as exc:
+        # Graceful refusals and run failures (workdir refused, empty run,
+        # unreachable host) are exit 1 with one clear line, never a traceback.
+        if exc.code is None:
+            return 0
+        if isinstance(exc.code, int):
+            return int(exc.code)
+        print("error: {}".format(exc.code), file=sys.stderr)
+        return 1
     except FileNotFoundError as exc:
         print("error: no such file: {}".format(exc.filename or exc), file=sys.stderr)
         return 2
