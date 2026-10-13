@@ -5,14 +5,14 @@
    "name": "wsl2-i7-12700k",
    "label": "WSL2 - i7-12700K (reference, 1000)",
    "measured": "2026-10",
-   "description": "Desktop i7-12700K, Ubuntu in WSL2, ext4 on NVMe. The AgentMark anchor.",
+   "description": "Desktop i7-12700K, Ubuntu in WSL2, ext4 on NVMe. The AgentMark anchor. Median of 3 runs.",
    "file": "wsl2-i7-12700k.json"
   },
   {
    "name": "windows-i7-12700k",
    "label": "Windows 11 - i7-12700K",
    "measured": "2026-10",
-   "description": "Same desktop as the reference, native Windows 11 with real-time antivirus and search indexing. Shows the software tax.",
+   "description": "Same desktop as the reference, native Windows 11 as-is: third-party real-time antivirus and search indexing active, shell commands through Git Bash. Median of 3 runs.",
    "file": "windows-i7-12700k.json"
   },
   {
@@ -26,7 +26,7 @@
    "name": "macos-m5-pro",
    "label": "macOS - Apple M5 Pro (busy)",
    "measured": "2026-10",
-   "description": "MacBook Pro, Apple M5 Pro, measured with heavy background load. A lower bound for the hardware.",
+   "description": "MacBook Pro, Apple M5 Pro, measured on battery under heavy background load (a backup running and a system daemon near 100% CPU). Median of 3 runs. A lower bound for the hardware, not its idle speed.",
    "file": "macos-m5-pro.json"
   }
  ]
