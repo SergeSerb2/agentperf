@@ -14,8 +14,10 @@ jobs:
             python: "3.8"
           - os: ubuntu-22.04
             python: "3.12"
-          - os: macos-13
-            python: "3.8"
+          # GitHub retired the Intel macOS runners, and Python 3.8 has no arm64
+          # build, so macOS covers 3.10; 3.8 stays covered on Linux and Windows.
+          - os: macos-latest
+            python: "3.10"
           - os: macos-latest
             python: "3.12"
           - os: windows-2022
