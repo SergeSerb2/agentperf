@@ -77,7 +77,7 @@ After the numbers, agentperf explains the score. This is the end of a run on
 a busy laptop:
 
 ```text
-AgentMark 430  (90% CI 426-432, coverage 100%)  vs reference 'WSL2 - i7-12700K (reference, 1000)'
+AgentMark 430  (90% within-run interval 426-432, coverage 100%)  vs reference 'WSL2 - i7-12700K (reference, 1000)'
 Reach     2,144  (network to model APIs and CDNs)
 LW100     2.6 s local wait per 100 tool calls (reference 0.6 s)
 
@@ -149,7 +149,8 @@ agentperf looks for these causes. Each one has shown up on a real machine.
 | `agentperf live` | Runs real Claude Code and Codex sessions. This costs tokens. |
 
 Add `--fetch-tools` when you compare machines. It downloads a pinned ripgrep
-build, so every machine searches with the same binary.
+build, so every machine searches with the same binary. Downloads are checked
+by SHA-256 and stored in `~/.agentperf/tools`; your PATH is not touched.
 
 <details>
 <summary><b>Running on other machines over SSH</b></summary>
@@ -166,8 +167,7 @@ agentperf remote my-pc --fetch-tools
 agentperf remote my-pc --wsl Ubuntu --fetch-tools
 ```
 
-Run `remote` from a pipx install or a checkout. It does not work from
-`agentperf.pyz` yet.
+`remote` works from any install, including `agentperf.pyz`.
 
 </details>
 
@@ -206,13 +206,14 @@ files in 400 folders, about 49 MB. Then it times seven kinds of work.
 | File transfer | 10 | Large reads, writes, and copies, plus unpacking an archive |
 | IPC | 5 | Pipes and local network connections |
 
-The weights come from 6,416 real Claude Code tool calls. Most of them (79%)
-were shell commands, so process start counts the most.
+The weights come from one developer's 6,416 real Claude Code tool calls.
+Most of them (79%) were shell commands, so process start counts the most.
 
 The tests are built to be fair across operating systems. Writes must reach
 the disk on every OS, cold reads skip the file cache, and every machine uses
 the same ripgrep build. [docs/METHODOLOGY.md](docs/METHODOLOGY.md) explains
-the rules, the statistics, and the scoring.
+the rules, the statistics, and the scoring, and
+[docs/FAQ.md](docs/FAQ.md) answers the usual objections.
 
 ## Privacy
 

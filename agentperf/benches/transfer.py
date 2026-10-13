@@ -24,7 +24,9 @@ def _block():
 
 def flush_to_device(fd: int, full: bool = True) -> None:
     """Make written data durable. On macOS, plain fsync() stops at the drive's cache;
-    F_FULLFSYNC matches what fsync() does on Linux and FlushFileBuffers on Windows."""
+    F_FULLFSYNC requests the same past-the-drive-cache guarantee that fsync()
+    requests on Linux and FlushFileBuffers on Windows (whether a drive honours
+    the request still depends on its firmware)."""
     if full and IS_MAC:
         import fcntl
         fcntl.fcntl(fd, F_FULLFSYNC)

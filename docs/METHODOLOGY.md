@@ -24,27 +24,55 @@ corpus hash.
 | File transfer | 10 | 256 MB cold read, 256 MB flushed write, 256 MB copy, copy of the 6,000-file tree, `.tar.gz` extraction | Package installs, artifact copies, clones |
 | IPC | 5 | 128 MB pipe, loopback TCP round trip and stream | Reading tool output, local servers |
 | Network (Reach) | separate | DNS, TLS handshake and time to first byte for api.anthropic.com and api.openai.com, 25 MB download, 8 MB upload, npm registry | Model API round trips, installs, pushes |
-| Diagnostics | not scored | login shell with dotfiles, PowerShell, `claude`/`codex` start, durable 4 KB write, git with fsmonitor, copy-on-write clone, plain-`fsync` write on macOS | Tuning advice |
+| Diagnostics | not scored | login shell with dotfiles, PowerShell, `claude`/`codex` start, shell spawn timed inside Node, durable 4 KB write, git with fsmonitor, copy-on-write clone, plain-`fsync` write on macOS | Tuning advice |
 
-The weights come from 6,416 real Claude Code tool calls: 79% were Bash, 9% Read,
-3.4% Write or Edit. Every Bash call starts a shell, so process spawn carries the
-largest weight.
+The weights come from one developer's 6,416 real Claude Code tool calls: 79%
+were Bash, 9% Read, 3.4% Write or Edit. Every Bash call starts a shell, so
+process spawn carries the largest weight. One person's history is a small
+sample, so [Sensitivity](#sensitivity) below re-scores every bundled profile
+under different weights; `agentperf compare --weights equal` reproduces it.
+
+## The reference machine
+
+1000 is one measured machine: a desktop i7-12700K running Ubuntu in WSL2, ext4
+on NVMe, measured in October 2026. It is not bare-metal Linux, and it is not an
+industry reference. It is the anchor because it was the fastest complete
+profile measured when the scale was set, and because WSL2 on a Windows desktop
+is a common home for coding agents. No bare-metal Linux profile had been
+measured yet; adding one does not move the anchor. Read every score as "speed
+relative to that one PC, in WSL2, on these fixed tests": 500 means half as
+fast as that setup at this local work, nothing more.
 
 ## Fairness rules
 
-- **Same durability for disk writes.** On macOS, plain `fsync()` stops at the
-  drive's cache, while Linux `fsync()` and Windows `FlushFileBuffers` flush it.
-  Scored writes on macOS therefore use `F_FULLFSYNC`. The plain-`fsync` number is
-  shown as a diagnostic.
+- **Same durability request for disk writes.** On macOS, plain `fsync()` stops
+  at the drive's cache, while Linux `fsync()` and Windows `FlushFileBuffers`
+  ask the drive to flush its volatile cache. Scored writes on macOS therefore
+  use `F_FULLFSYNC`, which makes the same request. Whether a given drive
+  honours any of these requests depends on its firmware; the plain-`fsync`
+  number is shown as a diagnostic on macOS.
 - **Cold reads bypass the cache without root:** `F_NOCACHE` on macOS,
   `posix_fadvise(DONTNEED)` on Linux, `FILE_FLAG_NO_BUFFERING` on Windows. The
-  method is recorded with the result.
+  Linux call only drops clean pages, which is why the read fixture is flushed
+  to the device when created; each sample advises again before reading. The
+  method is recorded with the result, and cold-read numbers are only comparable
+  between machines that used the same method.
 - **Copies move real bytes.** APFS and btrfs clones are reported as a diagnostic,
   never as copy throughput. Git worktrees keep any clone benefit, because that
   saving is real for agents.
 - **Same search binary.** `--fetch-tools` downloads ripgrep 15.2.0 (SHA-256
   checked) so every machine runs the same build. Node 22.23.3 is fetched only
-  where Node is missing.
+  where Node is missing. Both land in `~/.agentperf/tools` (PATH is never
+  touched). Pinned ripgrep exists for macOS (ARM64, x86-64), Linux x86-64
+  (musl, runs anywhere), Linux ARM64 (glibc), and Windows x86-64; pinned Node
+  needs glibc on Linux. Elsewhere the flag says so and system tools are used.
+- **Spawn harness overhead.** Scored process tests spawn from Python's
+  `subprocess`, while Claude Code spawns from Node and Codex from Rust. The
+  Python side adds a roughly constant per-spawn cost: on a busy M5 Pro, a shell
+  start measured 3.67 ms from Python vs 2.53 ms from Node (`diag.node_spawn`,
+  timed inside Node). A constant added to every machine compresses process
+  ratios toward 1, so cross-machine process gaps are understated, not
+  invented. `diag.node_spawn` reports the Node-side number on each machine.
 - **Python version.** Most compute tests call C code (hashlib, zlib, json), so the
   Python version matters little. The one interpreter-bound test has half weight,
   and the Python version is recorded.
@@ -77,15 +105,43 @@ references from three runs (`agentperf reference a.json b.json c.json`).
 - **Reach** = 1000 × geometric mean of the network ratios.
 - A missing test is never imputed. It lowers **coverage** instead. `compare`
   also prints AgentMark on the tests that all compared machines share.
-- The 90% interval comes from a bootstrap of each test's samples (300 rounds).
-  The reference stays fixed.
-- **LW100** = modelled seconds of local wait per 100 agent tool calls: 79 shell
-  starts, 26 file reads, 9.5 Python starts, 7.5 folder-tree greps (only 17% of
-  real grep calls search a tree), 6.3 git commands, 3.4 edits, 1.6 Node starts,
-  and 1 commit.
+- The 90% within-run interval comes from a bootstrap of each test's samples
+  (300 rounds). The reference stays fixed. It covers spread inside one run
+  only; between-run spread is larger (see Statistics). Reports label it
+  "within-run" everywhere.
+- **LW100** = modelled seconds of local wait per 100 agent tool calls, from the
+  same one-developer history as the weights: 79 shell starts, 26 file reads,
+  9.5 Python starts, 7.5 folder-tree greps (only 17% of real grep calls search
+  a tree), 6.3 git commands, 3.4 edits, 1.6 Node starts, and 1 commit. The
+  lines overlap (one Bash call can be a shell start plus a Python start plus a
+  grep), which is why they sum to more than 100 operations.
 
-Scores are comparable only for the same suite version, corpus hash, and reference
-file. Every result JSON records all three.
+Scores are comparable only when the corpus hash and the scored benchmark
+definitions match and the same reference file is used. Reports check this and
+print a comparability warning when they do not (see
+[Versioning and comparability](#versioning-and-comparability)).
+
+## Sensitivity
+
+The weights are the softest part of the method, so here is what changing them
+does. Every bundled profile, re-scored against the default reference under
+four weightings (AgentMark; "compute/git-heavy" = process 15, files 15,
+search 10, git 20, compute 25, transfer 10, IPC 5, a stand-in for a
+build-heavy Codex-style mix; "flat" = every scored test equal, categories
+ignored):
+
+| Profile | Default | Equal categories | Compute/git-heavy | Flat per-test |
+|---|---:|---:|---:|---:|
+| WSL2 - i7-12700K (reference) | 1000 | 1000 | 1000 | 1000 |
+| Windows 11 - i7-12700K | 67 | 88 | 87 | 88 |
+| macOS - Apple M1 Pro | 380 | 463 | 426 | 443 |
+| macOS - Apple M5 Pro (busy) | 430 | 527 | 504 | 507 |
+
+The rank order does not move, and neither does the native-Windows-vs-WSL2
+conclusion (an 11x gap instead of 15x at the extreme). Absolute points do
+move, by up to about 30%: treat AgentMark as a ratio with a soft second
+digit, not as a precise constant. `agentperf compare --weights equal`
+reproduces the equal column on your own results.
 
 ## Live agent mode
 
@@ -149,14 +205,21 @@ output must never abort a run.
 
 ## Versioning and comparability
 
-- `suite_version` (semver): any change that can move scores - a new scored
-  test, a weight change, a corpus change - bumps the minor version and is
-  noted in CHANGELOG.md.
+- `package_version`: the installed program version (`agentperf --version`
+  prints it first). `suite_version` in a result names the benchmark suite that
+  produced that result. Reports label the two separately, so an old result
+  never looks like the running program.
+- A change that can move scores (a new scored test, a weight change, a corpus
+  change) bumps the suite minor version and is noted in CHANGELOG.md.
 - `schema`: the result JSON shape. Readers must ignore unknown keys.
 - Corpus: `CORPUS_FORMAT` plus the recorded `fixture_hash`. The test suite
   pins the hash; changing generation bumps the format.
-- Scores compare only when suite version, fixture hash, and reference file
-  all match. Reports print all four values.
+- Comparability is checked on what was measured, not on version strings:
+  reports warn when two files carry different corpus hashes or different
+  scored benchmark definitions (category, weight, unit, direction). The
+  bundled reference profiles were measured with suite 0.1.0; their corpus hash
+  and scored definitions are identical to the current suite, so they compare
+  cleanly and no warning fires.
 
 ## Known limits
 
@@ -166,3 +229,7 @@ output must never abort a run.
   is real for agents on that machine, but it is a policy setting, not hardware.
 - `transfer.read` without root is best-effort cache bypass. Compare cold-read
   numbers only between machines that used the same method.
+- Reach is a snapshot of one network at one moment. DNS timings mostly measure
+  the OS resolver cache after the first lookup, and time-to-first-byte starts
+  after the TLS handshake (the handshake is its own test). Compare Reach
+  between places, not between afternoons.
