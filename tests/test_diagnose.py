@@ -86,10 +86,26 @@ class DiagnoseTest(unittest.TestCase):
         self.assertEqual(items[0]["confidence"], "observed")
 
     def test_mnt_detection_from_cwd_flag(self):
+        # Launch dir on /mnt/ only: noted, but the score is not compromised,
+        # so it must not be the top "nothing else matters" finding.
         doc = _doc("wsl", {"files.read": _entry("files", 500.0, ops=2000)},
                    {"os_family": "wsl", "cwd_on_windows_drive": True})
-        topics = [c["topic"] for c in diagnose.causes(doc, REF)]
-        self.assertTrue(any("/mnt/" in t for t in topics))
+        items = diagnose.causes(doc, REF)
+        mnt = [c for c in items if "/mnt/" in c["topic"]]
+        self.assertTrue(mnt)
+        self.assertIn("not affected", mnt[0]["summary"])
+        self.assertEqual(mnt[0]["affected"], [])
+        self.assertLess(mnt[0]["priority"], 100)
+
+    def test_fast_native_windows_is_not_told_to_move_to_wsl2(self):
+        fast_win = _doc("win", {
+            "process.shell": _entry("process", 9.0),
+            "process.exec": _entry("process", 4.0),
+            "files.read": _entry("files", 90.0, ops=2000),
+            "compute.sha256": _entry("compute", 1100.0, lower=False),
+        }, {"os_family": "windows", "cpu_model": "OtherCPU", "python": "3.12.0"})
+        topics = [c["topic"] for c in diagnose.causes(fast_win, REF)]
+        self.assertFalse(any("WSL2" in t for t in topics), topics)
 
     def test_minor_wins_are_partitioned_below_five_points(self):
         major, minor = diagnose.partition_causes([

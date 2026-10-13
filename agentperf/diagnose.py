@@ -129,13 +129,24 @@ def partition_causes(items):
     return major, minor
 
 
-def _on_windows_drive(s) -> bool:
-    """True when the work directory (or the invoking directory) is /mnt/* in WSL."""
-    if s.get("workdir_on_windows_drive") or s.get("cwd_on_windows_drive"):
+def _workdir_on_windows_drive(s) -> bool:
+    """True when the measured work directory is /mnt/* in WSL (score affected)."""
+    if s.get("workdir_on_windows_drive"):
         return True
     if not (s.get("os_family") == "wsl" or s.get("wsl")):
         return False
-    return any(str(s.get(k) or "").startswith("/mnt/") for k in ("workdir", "cwd"))
+    return str(s.get("workdir") or "").startswith("/mnt/")
+
+
+def _cwd_on_windows_drive(s) -> bool:
+    """True when only the launch directory is /mnt/* (score not affected)."""
+    if _workdir_on_windows_drive(s):
+        return False
+    if s.get("cwd_on_windows_drive"):
+        return True
+    if not (s.get("os_family") == "wsl" or s.get("wsl")):
+        return False
+    return str(s.get("cwd") or "").startswith("/mnt/")
 
 
 def _cause(topic, confidence, summary, evidence, fix, affected, result, reference, priority=0):
@@ -185,8 +196,9 @@ def causes(result, reference) -> List[Dict[str, object]]:
         out.append(_cause(
             "Antivirus / endpoint security scanning", "likely",
             "Security scanning taxes every process start and small-file operation. "
-            "This is the single largest software effect agentperf sees on Windows: "
-            "the same PC scored 67 natively and 1000 in WSL2.",
+            "On one measured PC with real-time antivirus and search indexing "
+            "(October 2026) it was the largest software effect agentperf has "
+            "seen on Windows: AgentMark 67 natively vs 1000 in WSL2.",
             ev,
             ["Exclude your code folders, package caches (npm, pip, cargo), and ~/.agentperf from real-time scanning.",
              "On Windows, put code on a Dev Drive (ReFS) so Defender uses performance mode, or run agents in WSL2 with repos on the Linux filesystem.",
@@ -205,12 +217,17 @@ def causes(result, reference) -> List[Dict[str, object]]:
              "Keep repos off synced folders (iCloud, OneDrive) and off /mnt/<drive> in WSL."],
             process_ids + file_ids, result, reference))
 
-    # Native Windows: the measured same-hardware WSL2 gap is the headline win.
-    if s.get("os_family") == "windows":
+    # Native Windows: the measured same-hardware WSL2 gap is the headline win,
+    # but only claim it when this machine actually shows the slow pattern. A
+    # tuned native setup (Dev Drive, AV exclusions) can be fine as it is.
+    if s.get("os_family") == "windows" and (slow(process_ids) or slow(file_ids)):
         ev = ["Probe: this run is native Windows (os_family=windows), not WSL2.",
-              "Measured on the bundled reference hardware (i7-12700K): native "
-              "Windows scores AgentMark 67 while WSL2 on the same PC scores "
-              "1000. The CPU is not the limit; per-process and per-file costs are."]
+              "Pattern: process starts and/or small files trail the WSL2 "
+              "reference on this machine.",
+              "Measured on the bundled reference hardware (i7-12700K, October "
+              "2026, with real-time antivirus and search indexing on): native "
+              "Windows scored AgentMark 67 while WSL2 on the same PC scored "
+              "1000. One PC, with those settings; your gap may be smaller."]
         shell = _median(result, "process.shell")
         ref_shell = _median(reference, "process.shell")
         if shell and ref_shell and shell > 2 * ref_shell:
@@ -218,13 +235,15 @@ def causes(result, reference) -> List[Dict[str, object]]:
                       "WSL2 reference.".format(shell, ref_shell))
         out.append(_cause(
             "Run agents in WSL2 with repos on the Linux filesystem", "likely",
-            "On the reference PC the same hardware scored 67 natively on "
-            "Windows and 1000 in WSL2 - the largest single change agentperf "
-            "has measured. Agents start processes and touch small files all "
-            "day; WSL2 does both at Linux cost. Keep repos on the Linux "
-            "filesystem: under /mnt/c they are slower than native Windows "
-            "(2,000 small files: 41.8 s on /mnt/c vs 0.024 s on WSL ext4 "
-            "vs 3.0 s natively).",
+            "This machine shows the slow native pattern: per-process and "
+            "per-file costs, not the CPU, are the limit. On the one PC where "
+            "both sides were measured (real-time antivirus and indexing on), "
+            "the same hardware scored 67 natively on Windows and 1000 in "
+            "WSL2 - the largest single change agentperf has measured. Agents "
+            "start processes and touch small files all day; WSL2 does both at "
+            "Linux cost. Keep repos on the Linux filesystem: under /mnt/c "
+            "they are slower than native Windows (2,000 small files: 41.8 s "
+            "on /mnt/c vs 0.024 s on WSL ext4 vs 3.0 s natively, that PC).",
             ev,
             ["Install WSL2 (wsl --install) and run the agent inside it.",
              "Clone repos inside the Linux filesystem (for example ~/code), never under /mnt/c.",
@@ -233,22 +252,36 @@ def causes(result, reference) -> List[Dict[str, object]]:
             process_ids + file_ids + [b for b in rr if b.startswith(("git.", "search.", "transfer."))],
             result, reference, priority=90))
 
-    # Workdir location.
-    if _on_windows_drive(s):
-        where = "benchmark work directory" if (s.get("workdir_on_windows_drive")
-                or str(s.get("workdir") or "").startswith("/mnt/")) else "directory you ran from"
+    # Workdir location. A workdir on /mnt/ means the disk numbers measure
+    # NTFS through 9P: the score itself is compromised. A launch directory
+    # there (workdir elsewhere) does not touch the score at all.
+    if _workdir_on_windows_drive(s):
         out.append(_cause(
             "Repository on a Windows drive from WSL (/mnt/...)", "observed",
-            "The {} is under /mnt/. In WSL2 every file "
-            "operation crosses to Windows NTFS through 9P. Measured: creating "
-            "2,000 small files took 41.8 s on /mnt/c vs 0.024 s on WSL ext4 "
-            "vs 3.0 s on native Windows. Move the repo; nothing else matters "
-            "until this is fixed.".format(where),
-            ["Probe: the {} for this run is under /mnt/ (a Windows drive seen from WSL).".format(where)],
+            "The benchmark work directory is under /mnt/. In WSL2 every file "
+            "operation crosses to Windows NTFS through 9P, so this score "
+            "mostly measures that crossing. Measured: creating 2,000 small "
+            "files took 41.8 s on /mnt/c vs 0.024 s on WSL ext4 vs 3.0 s on "
+            "native Windows (one PC). Move the repo; nothing else matters "
+            "until this is fixed.",
+            ["Probe: the benchmark work directory for this run is under /mnt/ "
+             "(a Windows drive seen from WSL)."],
             ["Clone repos inside the Linux filesystem (for example ~/code).",
              "Access them from Windows via \\\\wsl$ only when you must."],
             file_ids + [b for b in rr if b.startswith(("git.", "search.", "transfer."))],
             result, reference, priority=100))
+    elif _cwd_on_windows_drive(s):
+        out.append(_cause(
+            "Launched from a Windows drive path (/mnt/...)", "observed",
+            "You started this run from a directory under /mnt/, but the "
+            "benchmark work directory is on the Linux filesystem, so this "
+            "score is not affected. Repos you keep under /mnt/ still pay the "
+            "full 9P cost for every file operation (2,000 small files: "
+            "41.8 s there vs 0.024 s on WSL ext4, one measured PC).",
+            ["Probe: the launch directory is under /mnt/; the work directory is not."],
+            ["Keep repos inside the Linux filesystem (for example ~/code), "
+             "and run agents from there."],
+            [], result, reference, priority=-10))
     if s.get("workdir_in_icloud"):
         out.append(_cause(
             "Work directory in a synced folder (iCloud/CloudStorage)", "observed",
