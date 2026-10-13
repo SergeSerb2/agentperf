@@ -539,21 +539,24 @@ def placement(result, reference, others) -> Dict[str, object]:
             rows.append({"label": doc.get("label", "?"), "agentmark": mark})
     rows.sort(key=lambda r: -(r["agentmark"] or 0))
     faster = sum(1 for r in rows if mine and r["agentmark"] and mine > r["agentmark"])
+    agentmark_tests = [b for b in restricted.get("compared") or []
+                       if (result["benchmarks"].get(b) or {}).get("category")
+                       in CATEGORY_WEIGHTS]
     return {"agentmark": mine, "full_agentmark": full["agentmark"],
             # The interval belongs to the restricted point beside it,
             # never to the full-test score.
             "agentmark_ci": restricted.get("agentmark_ci"),
             "ci_kind": restricted.get("ci_kind"),
             "coverage": full["coverage"],
-            "common_tests": len(restricted.get("compared") or []),
+            "common_tests": len(agentmark_tests),
             "references": rows, "faster_than": faster,
             "of": len(rows),
             "note": ("Placement uses {} bundled reference profiles only, scored "
-                     "on the {} scored tests every profile shares (your full-test "
+                     "on the {} AgentMark tests every profile shares (your full-test "
                      "coverage is {:.0%}). That is too few machines for a "
                      "meaningful percentile, so agentperf reports a rank, "
                      "not a percentile.".format(
-                         len(rows), len(restricted.get("compared") or []),
+                         len(rows), len(agentmark_tests),
                          full["coverage"]))}
 
 

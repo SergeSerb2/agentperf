@@ -24,6 +24,17 @@ def esc(text) -> str:
     return html.escape(str(text), quote=True)
 
 
+def _agentmark_tests(machine):
+    """Compared tests that actually feed AgentMark (not diagnostics,
+    and not the Reach network tests, which score separately)."""
+    out = []
+    for bid in machine.shown.get("compared") or []:
+        entry = (machine.doc.get("benchmarks") or {}).get(bid) or {}
+        if entry.get("category") in CATEGORY_WEIGHTS:
+            out.append(bid)
+    return out
+
+
 # ---------------------------------------------------------------- data model
 
 class Machine:
@@ -375,7 +386,7 @@ def write_html(results, reference, path: str, estimates: Optional[str] = None, t
                          " est" if m.estimated else "", esc(m.label),
                          ' <span class="badge">estimate</span>' if m.estimated else "",
                          fmt_num(m.shown["agentmark"]), kind, rng_txt,
-                         len(m.shown.get("compared") or []), m.score["coverage"],
+                         len(_agentmark_tests(m)), m.score["coverage"],
                          lw_txt, lw_parts, fmt_num(m.shown.get("reach")), warn_txt))
 
     am_rows = [(m.label, m.shown["agentmark"], m.short_system, m.estimated, m.range,
@@ -399,10 +410,11 @@ def write_html(results, reference, path: str, estimates: Optional[str] = None, t
     compat = "".join(
         '<p class="lede"><b>Comparability ({}):</b> {}</p>'.format(esc(m.label), esc(w))
         for m in machines for w in m.warnings)
-    scored_common = (set.intersection(*[set(m.shown.get("compared") or [])
+    scored_common = (set.intersection(*[set(_agentmark_tests(m))
                                          for m in machines])
                      if machines else set())
-    compat += ('<p class="lede">Scores above use the {} scored tests every machine ran. '
+    compat += ('<p class="lede">AgentMark scores above use the {} scored tests '
+               'every machine ran (Reach network tests score separately). '
                'Coverage says how much of the reference weight each machine scored.</p>').format(
                    len(scored_common))
     data_json = json.dumps({"reference": reference["label"],

@@ -415,12 +415,13 @@ class ReportRound6Test(_Tmp):
     def test_new9_scored_common_count_excludes_diagnostics(self):
         from agentperf.report_html import write_html
         benches = {"process.shell": _entry("process", 10.0),
+                   "network.dns": _entry("network", 5.0),
                    "diag.node_spawn": _entry("diag", 3.0, scored=False)}
         ref = _doc("ref", dict(benches))
         doc = _doc("mine", dict(benches))
         out = os.path.join(self.tmp, "c.html")
         write_html([doc], ref, out)
-        with open(out) as fh:
+        with open(out, encoding="utf-8") as fh:
             page = fh.read()
         self.assertIn("1 scored tests every machine ran", page)
         self.assertNotIn("2 scored tests every machine ran", page)
