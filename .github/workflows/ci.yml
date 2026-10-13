@@ -1,0 +1,45 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            python: "3.8"
+          - os: ubuntu-22.04
+            python: "3.12"
+          - os: macos-13
+            python: "3.8"
+          - os: macos-latest
+            python: "3.12"
+          - os: windows-2022
+            python: "3.8"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests
+        run: python -m unittest discover -s tests -t .
+      - name: Smoke run (quick, no network)
+        run: python -m agentperf run --quick --no-network --clean --label ci-smoke --out ci-result.json
+      - name: Report and share smoke
+        run: |
+          python -m agentperf report ci-result.json --html ci-report.html
+          python -m agentperf share ci-result.json --out ci-share.json
+          python -m agentperf references
+      - name: Single-file build smoke
+        run: |
+          python scripts/build_pyz.py agentperf.pyz
+          python agentperf.pyz --version
+          python agentperf.pyz references

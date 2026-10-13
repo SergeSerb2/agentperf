@@ -1,0 +1,33 @@
+{
+ "default": "wsl2-i7-12700k",
+ "profiles": [
+  {
+   "name": "wsl2-i7-12700k",
+   "label": "WSL2 - i7-12700K (reference, 1000)",
+   "measured": "2026-10",
+   "description": "Desktop i7-12700K, Ubuntu in WSL2, ext4 on NVMe. The AgentMark anchor.",
+   "file": "wsl2-i7-12700k.json"
+  },
+  {
+   "name": "windows-i7-12700k",
+   "label": "Windows 11 - i7-12700K",
+   "measured": "2026-10",
+   "description": "Same desktop as the reference, native Windows 11 with real-time antivirus and search indexing. Shows the software tax.",
+   "file": "windows-i7-12700k.json"
+  },
+  {
+   "name": "macos-m1-pro",
+   "label": "macOS - Apple M1 Pro",
+   "measured": "2026-10",
+   "description": "MacBook Pro, Apple M1 Pro, APFS. Median of 3 runs.",
+   "file": "macos-m1-pro.json"
+  },
+  {
+   "name": "macos-m5-pro",
+   "label": "macOS - Apple M5 Pro (busy)",
+   "measured": "2026-10",
+   "description": "MacBook Pro, Apple M5 Pro, measured with heavy background load. A lower bound for the hardware.",
+   "file": "macos-m5-pro.json"
+  }
+ ]
+}

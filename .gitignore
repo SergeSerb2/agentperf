@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+dist/
+*.egg-info/
+build/
+.agentperf/
+agentperf-2*.json
+*-report.html
+!examples/example-report.html

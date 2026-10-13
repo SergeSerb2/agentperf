@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentperf"
+version = "0.2.0"
+description = "Measure how well a computer serves AI coding agents - and explain why"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "agentperf contributors" }]
+keywords = ["benchmark", "ai-agents", "coding-agents", "performance", "developer-tools"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Testing",
+  "Topic :: System :: Benchmark",
+]
+dependencies = []
+
+[project.scripts]
+agentperf = "agentperf.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/SergeSerb2/agentperf"
+Repository = "https://github.com/SergeSerb2/agentperf"
+Issues = "https://github.com/SergeSerb2/agentperf/issues"
+
+[tool.setuptools.packages.find]
+include = ["agentperf*"]
+
+[tool.setuptools.package-data]
+agentperf = ["references/*.json", "references/DEFAULT"]

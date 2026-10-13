@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a133a0-c8d0-75d0-acd9-f852e8afcc0d"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll run `ls` once.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc ls","aggregated_output":"note.txt\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"DONE"}}
+{"type":"turn.completed","usage":{"input_tokens":30488,"cached_input_tokens":27264,"cache_write_input_tokens":0,"output_tokens":46,"reasoning_output_tokens":0}}
