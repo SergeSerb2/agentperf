@@ -147,18 +147,24 @@ class Corpus:
             return False
         if data.get("format") != CORPUS_FORMAT or len(data.get("files", [])) != FILE_COUNT:
             return False
-        # A damaged cache must not pass: count the files and spot-check sizes
-        # (content is deterministic, so sizes are known exactly).
+        # A damaged cache must not pass: re-hash every file's bytes and
+        # compare with the manifest. Counting files or spot-checking sizes
+        # would certify changed content under the original fixture hash.
         count = sum(len(names) for _root, _dirs, names in os.walk(self.tree))
         if count != FILE_COUNT:
             return False
-        for i in (0, FILE_COUNT // 2, FILE_COUNT - 1):
-            path = os.path.join(self.tree, *data["files"][i].split("/"))
-            try:
-                if os.path.getsize(path) != len(_content(i)):
-                    return False
-            except OSError:
-                return False
+        h = hashlib.sha256()
+        total = 0
+        try:
+            for rel in data["files"]:
+                with open(os.path.join(self.tree, *rel.split("/")), "rb") as fh:
+                    blob = fh.read()
+                h.update(rel.encode("utf-8") + b"\0" + blob)
+                total += len(blob)
+        except OSError:
+            return False
+        if h.hexdigest()[:16] != data.get("fixture_hash") or total != data.get("total_bytes"):
+            return False
         self.files = data["files"]
         self.total_bytes = data["total_bytes"]
         self.fixture_hash = data["fixture_hash"]

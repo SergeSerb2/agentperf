@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from . import PACKAGE_VERSION, SUITE_VERSION, scoring
 from .advice import advise
 from .registry import CATEGORY_TITLES, CATEGORY_WEIGHTS
-from .util import fmt_gain, fmt_num
+from .util import fmt_gain, fmt_num, fmt_ratio
 
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 SERIES_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
@@ -35,6 +35,8 @@ class Machine:
         self.score = scoring.score(doc, reference, category_weights=category_weights)
         self.common = scoring.score(doc, reference, restrict=common,
                                     category_weights=category_weights)
+        self.shown = self.score  # compare pages switch this to the common-test score
+        self.warnings = scoring.compatibility_warnings(doc, reference)
         self.lw = scoring.lw100(doc, common)
         self.range = None
         if estimated and low and high:
@@ -153,7 +155,8 @@ def _stacked_lw(machines: List[Machine], width=720) -> str:
     labels = [line[0] for line in scoring.LW100_MIX]
     row_h, top, left, right = 34, 8, 200, 70
     plot_w = width - left - right
-    vmax = max(m.lw["seconds"] for m in machines) * 1.05 or 1
+    totals = [m.lw["seconds"] for m in machines if m.lw["seconds"]]
+    vmax = (max(totals) * 1.05) if totals else 1
     height = top + row_h * len(machines) + 6
     parts = ['<svg class="chart" viewBox="0 0 {} {}" role="img">'.format(width, height)]
     parts.append('<line class="axis" x1="{0}" x2="{0}" y1="{1}" y2="{2}"/>'.format(left, top - 4, height - 4))
@@ -174,7 +177,15 @@ def _stacked_lw(machines: List[Machine], width=720) -> str:
                          'fill="var(--series-{})"{}/></g>'.format(esc(tip), x, y + 2, seg_w, k + 1,
                                                                 ' opacity="0.55"' if m.estimated else ""))
             x += w
-        parts.append('<text class="value" x="{:.1f}" y="{}">{:.1f} s</text>'.format(x + 4, y + 17, m.lw["seconds"]))
+        if m.lw["seconds"] is None:
+            parts.append('<text class="value" x="{:.1f}" y="{}">not available</text>'.format(x + 4, y + 17))
+        else:
+            label_txt = "{:.1f} s".format(m.lw["seconds"])
+            if m.lw["missing"]:
+                label_txt += " ({} of {} parts)".format(
+                    len(m.lw["lines"]), len(m.lw["lines"]) + len(m.lw["missing"]))
+            parts.append('<text class="value" x="{:.1f}" y="{}">{}</text>'.format(
+                x + 4, y + 17, esc(label_txt)))
     parts.append("</svg>")
     legend = "".join('<span class="key"><i style="background:var(--series-{})"></i>{}</span>'.format(k + 1, esc(l))
                      for k, l in enumerate(labels))
@@ -206,15 +217,15 @@ def _heatmap(machines: List[Machine]) -> str:
     rows = ['<tr><th></th>{}</tr>'.format(head)]
     marks = []
     for m in machines:
-        color = _heat_color(m.score["agentmark"])
+        color = _heat_color(m.shown["agentmark"])
         marks.append('<td class="cell strong" style="background:{};color:{}" tabindex="0" data-tip="{}">{}</td>'.format(
-            color, _ink_for(color), esc("{} AgentMark {}".format(m.label, fmt_num(m.score["agentmark"]))),
-            fmt_num(m.score["agentmark"])))
+            color, _ink_for(color), esc("{} AgentMark {}".format(m.label, fmt_num(m.shown["agentmark"]))),
+            fmt_num(m.shown["agentmark"])))
     rows.append('<tr><th scope="row">AgentMark</th>{}</tr>'.format("".join(marks)))
     for cat in cats:
         cells = []
         for m in machines:
-            v = m.score["categories"].get(cat)
+            v = m.shown["categories"].get(cat)
             color = _heat_color(v)
             tip = "{} · {}: {}".format(m.label, CATEGORY_TITLES[cat], fmt_num(v) if v else "not measured")
             cells.append('<td class="cell" style="background:{};color:{}" tabindex="0" data-tip="{}">{}</td>'.format(
@@ -336,22 +347,35 @@ def write_html(results, reference, path: str, estimates: Optional[str] = None, t
     for docs in _estimate_docs(estimates, reference):
         machines.append(Machine(docs["mid"], reference, common, True, docs["pessimistic"],
                                 docs["optimistic"], category_weights=category_weights))
-    machines.sort(key=lambda m: -(m.score["agentmark"] or 0))
+    # Rank and display on the common comparable tests only: unrestricted
+    # scores over different test subsets can reverse the true order.
+    for m in machines:
+        m.shown = m.common
+        if not m.estimated and m.common.get("agentmark_ci"):
+            m.range = tuple(m.common["agentmark_ci"])
+    machines.sort(key=lambda m: -(m.shown["agentmark"] or 0))
 
     tiles = []
     for m in machines:
         rng = m.range
         rng_txt = "{}–{}".format(fmt_num(rng[0]), fmt_num(rng[1])) if rng else ""
-        kind = "modelled range" if m.estimated else "90% within-run interval"
+        kind = "modelled range" if m.estimated else "90% " + m.shown.get("ci_kind", "within-run interval")
+        lw_txt = "{:.1f} s".format(m.lw["seconds"]) if m.lw["seconds"] is not None else "not available"
+        warn_txt = ('<div class="muted small">Comparability: {}</div>'.format(esc("; ".join(m.warnings)))
+                    if m.warnings else "")
         tiles.append('<div class="tile{}"><div class="tile-label">{}{}</div><div class="tile-value">{}</div>'
-                     '<div class="muted small">{} {}</div><div class="muted small">LW100 {:.1f} s · Reach {}</div></div>'.format(
+                     '<div class="muted small">{} {}</div><div class="muted small">on {} common tests · coverage {:.0%}</div>'
+                     '<div class="muted small">LW100 {} · Reach {}</div>{}</div>'.format(
                          " est" if m.estimated else "", esc(m.label),
                          ' <span class="badge">estimate</span>' if m.estimated else "",
-                         fmt_num(m.score["agentmark"]), kind, rng_txt, m.lw["seconds"], fmt_num(m.score.get("reach"))))
+                         fmt_num(m.shown["agentmark"]), kind, rng_txt, len(common), m.score["coverage"],
+                         lw_txt, fmt_num(m.shown.get("reach")), warn_txt))
 
-    am_rows = [(m.label, m.score["agentmark"], m.short_system, m.estimated, m.range,
-                "{}: AgentMark {} ({})".format(m.label, fmt_num(m.score["agentmark"]),
-                                               "estimate" if m.estimated else "measured")) for m in machines]
+    am_rows = [(m.label, m.shown["agentmark"], m.short_system, m.estimated, m.range,
+                "{}: AgentMark {} on common tests ({}; full-set {}, coverage {:.0%})".format(
+                    m.label, fmt_num(m.shown["agentmark"]),
+                    "estimate" if m.estimated else "measured",
+                    fmt_num(m.score["agentmark"]), m.score["coverage"])) for m in machines]
     am_chart = _bar_chart(am_rows, fmt_num, ref_value=1000, ref_label="reference = 1000")
 
     transfer_blocks = []
@@ -365,14 +389,20 @@ def write_html(results, reference, path: str, estimates: Optional[str] = None, t
             transfer_blocks.append('<div class="mini"><h4>{} <span class="muted small">MB/s, log scale</span></h4>{}</div>'.format(
                 esc(name), _bar_chart(rows, lambda v: fmt_num(v) + " MB/s", width=560, log=True)))
 
+    compat = "".join(
+        '<p class="lede"><b>Comparability ({}):</b> {}</p>'.format(esc(m.label), esc(w))
+        for m in machines for w in m.warnings)
+    compat += ('<p class="lede">Scores above use the {} scored tests every machine ran. '
+               'Coverage says how much of the reference weight each machine scored.</p>').format(len(common))
     data_json = json.dumps({"reference": reference["label"],
                             "machines": [{"label": m.label, "estimated": m.estimated,
-                                          "agentmark": m.score["agentmark"], "reach": m.score.get("reach"),
-                                          "categories": m.score["categories"], "lw100": m.lw["seconds"]}
+                                          "agentmark": m.shown["agentmark"], "reach": m.shown.get("reach"),
+                                          "categories": m.shown["categories"], "lw100": m.lw["seconds"],
+                                          "coverage": m.score["coverage"], "warnings": m.warnings}
                                          for m in machines]}, indent=1)
     page = _TEMPLATE.format(
         title=esc(title or "agentperf: how well each machine serves coding agents"),
-        version=esc(PACKAGE_VERSION), ref=esc(reference["label"]),
+        version=esc(PACKAGE_VERSION), ref=esc(reference["label"]), compat=compat,
         date=esc(datetime.date.today().isoformat()), tiles="".join(tiles), am_chart=am_chart,
         heat=_heatmap(machines), lw=_stacked_lw(machines), transfer="".join(transfer_blocks),
         findings=_findings(machines), raw=_raw_table(machines, reference), live=_live_section(live),
@@ -450,6 +480,7 @@ details summary {{ cursor:pointer; color:var(--text-secondary); }}
 1000 = the reference machine (<b>{ref}</b>); 2000 means twice as fast. Network is scored separately as Reach.
 LW100 is the modelled local wait per 100 agent tool calls. Hatched bars and dashed tiles are estimates, not measurements.
 <span class="muted">agentperf {version} · {date}</span></p>
+{compat}
 <div class="tiles">{tiles}</div>
 
 <h2>AgentMark</h2><section>{am_chart}</section>
@@ -539,15 +570,16 @@ def _cause_cards(result, reference) -> str:
     major, minor = diagnose.partition_causes(items)
     cards = []
     for i, c in enumerate(major, 1):
-        gain = ""
-        if c["gain_points"]:
+        if c.get("gain_estimated") and c["gain_points"]:
             gain = ('<div class="gain">up to +{} AgentMark</div>'
                     '<div class="muted small">if the affected tests reached reference speed '
                     '(upper bound; gains overlap and do not add up)</div>').format(
                         fmt_gain(c["gain_points"]))
+        else:
+            gain = '<div class="muted small">Gain not estimated.</div>'
         ev = "".join('<li class="ev">{}</li>'.format(esc(e)) for e in c["evidence"])
         fix = "".join('<li class="fix">{}</li>'.format(esc(f)) for f in c["fix"])
-        aff = ", ".join(c["affected"]) or "not scored (paid per tool call)"
+        aff = c.get("affected_text") or ", ".join(c["affected"]) or "not tied to scored tests"
         cards.append('<div class="card win"><h4>{}. {} <span class="conf {}">{}</span></h4>{}'
                      '<p>{}</p><p class="muted small">Evidence</p><ul>{}</ul>'
                      '<p class="muted small">Fix</p><ul>{}</ul>'
@@ -583,16 +615,16 @@ def _attribution_sections(result, reference) -> str:
         for t in block["tests"]:
             pct = min(100.0, t["ratio"] * 50.0)  # 2x reference fills the bar
             color = "var(--series-1)" if t["ratio"] >= 1 else "var(--series-2)"
-            tip = esc("{}: {} vs {} {} (x{:.2f})".format(
-                t["id"], fmt_num(t["value"]), fmt_num(t["reference"]), t["unit"], t["ratio"]))
+            tip = esc("{}: {} vs {} {} (x{})".format(
+                t["id"], fmt_num(t["value"]), fmt_num(t["reference"]), t["unit"], fmt_ratio(t["ratio"])))
+            cost = "-" + fmt_gain(t["gain_points"]) if t["gain_points"] and round(t["gain_points"]) >= 1 else "-"
             rows.append('<tr tabindex="0" data-tip="{}"><td><code>{}</code><div class="muted small">{}</div></td>'
                         '<td class="num">{}</td><td class="num">{}</td><td>{}</td>'
-                        '<td class="num"><span class="ratiobar" style="width:{:.0f}px;background:{}"></span> x{:.2f}</td>'
+                        '<td class="num"><span class="ratiobar" style="width:{:.0f}px;background:{}"></span> x{}</td>'
                         '<td class="num">{}</td><td class="num">{}</td></tr>'.format(
                             tip, esc(t["id"]), esc(t["title"]), fmt_num(t["value"]),
-                            fmt_num(t["reference"]), esc(t["unit"]), pct, color, t["ratio"],
-                            fmt_num(t["score"]),
-                            "-" + fmt_gain(t["gain_points"]) if t["gain_points"] else "-"))
+                            fmt_num(t["reference"]), esc(t["unit"]), pct, color, fmt_ratio(t["ratio"]),
+                            fmt_num(t["score"]), cost))
         head = '{} - score {}'.format(esc(block["title"]), fmt_num(block["score"]))
         if block["weight"]:
             head += ' <span class="muted small">weight {:.0f} of 100</span>'.format(block["weight"])
@@ -649,9 +681,12 @@ def write_report(result, reference, path: str, references=None, title=None) -> N
     def short(label):
         return label if len(label) <= 30 else label[:29] + "..."
 
-    rows = [(short(result["label"] + " (you)"), sc["agentmark"], machine.short_system, False,
+    # Placement scores are restricted to the tests every profile shares,
+    # so the "you" bar uses the same basis as the profile bars.
+    rows = [(short(result["label"] + " (you)"), place["agentmark"], machine.short_system, False,
              tuple(sc["agentmark_ci"]) if sc.get("agentmark_ci") else None,
-             "Your machine: AgentMark {}".format(fmt_num(sc["agentmark"])))]
+             "Your machine: AgentMark {} on the shared tests ({} on all your tests)".format(
+                 fmt_num(place["agentmark"]), fmt_num(sc["agentmark"])))]
     for r in place["references"]:
         if r["label"] == result["label"]:
             continue  # the example case: reporting on a bundled profile itself
@@ -660,21 +695,29 @@ def write_report(result, reference, path: str, references=None, title=None) -> N
     rows.sort(key=lambda r: -(r[1] or 0))
     place_chart = _bar_chart(rows, fmt_num, ref_value=1000, ref_label="reference = 1000")
     ci = sc.get("agentmark_ci") or [None, None]
+    my_lw, ref_lw = scoring.lw100_common(result, reference)
+    lw_value = "{:.1f} s".format(my_lw["seconds"]) if my_lw["seconds"] is not None else "not available"
+    lw_sub = ("estimated; reference {:.1f} s on the same parts".format(ref_lw["seconds"])
+              if ref_lw["seconds"] is not None else "estimated local wait per 100 tool calls")
+    if my_lw["missing"]:
+        lw_sub += "; covers {} of {} parts".format(
+            len(my_lw["lines"]), len(my_lw["lines"]) + len(my_lw["missing"]))
     tiles = (
         '<div class="tile"><div class="tile-label">AgentMark</div><div class="tile-value">{}</div>'
-        '<div class="muted small">90% within-run interval {}-{}</div></div>'
+        '<div class="muted small">90% {} {}-{}</div></div>'
         '<div class="tile"><div class="tile-label">LW100 (local wait / 100 calls)</div>'
-        '<div class="tile-value">{:.1f} s</div><div class="muted small">reference {:.1f} s</div></div>'
+        '<div class="tile-value">{}</div><div class="muted small">{}</div></div>'
         '<div class="tile"><div class="tile-label">Reach (network)</div><div class="tile-value">{}</div>'
         '<div class="muted small">model APIs and CDNs, scored apart</div></div>'
         '<div class="tile"><div class="tile-label">Coverage</div><div class="tile-value">{:.0%}</div>'
         '<div class="muted small">share of reference weight scored</div></div>').format(
-            fmt_num(sc["agentmark"]), fmt_num(ci[0]), fmt_num(ci[1]),
-            machine.lw["seconds"], scoring.lw100(reference, common)["seconds"],
+            fmt_num(sc["agentmark"]), esc(sc.get("ci_kind", "within-run interval")),
+            fmt_num(ci[0]), fmt_num(ci[1]),
+            esc(lw_value), esc(lw_sub),
             fmt_num(sc.get("reach")), sc["coverage"])
     drags = diagnose.attribution(result, reference)["biggest_drags"]
-    drag_items = "".join('<li><code>{}</code> x{:.2f} vs reference - worth up to +{} AgentMark</li>'.format(
-        esc(t["id"]), t["ratio"], fmt_gain(t["gain_points"])) for t in drags[:5]) or "<li>None: no test trails the reference.</li>"
+    drag_items = "".join('<li><code>{}</code> x{} vs reference - worth up to +{} AgentMark</li>'.format(
+        esc(t["id"]), fmt_ratio(t["ratio"]), fmt_gain(t["gain_points"])) for t in drags[:5]) or "<li>None: no test trails the reference.</li>"
     comparable = esc("suite {} - schema {} - corpus {} - reference '{}'".format(
         result.get("suite_version", SUITE_VERSION), result.get("schema", "?"),
         (result.get("corpus") or {}).get("fixture_hash", "?"), reference["label"]))
@@ -698,13 +741,15 @@ or <b>possible</b> (pattern only). Gains are upper bounds and overlap.
 <h2>Findings checklist</h2>%%FINDINGS%%
 <h2>All measurements</h2><section><details><summary>Medians for every test</summary>%%RAW%%</details></section>
 <p class="muted small">How to read this: AgentMark is a weighted geometric mean over fixed tests.
-Single runs vary about 10-15%; use --runs 3 for close calls. Scores compare only within the same
-suite version, corpus hash, and reference. Share an anonymized result with: agentperf share result.json</p>
+Single runs vary about 10-15%; use --runs 3 for close calls. Scores compare only when the corpus
+fixture hash, the scored benchmark definitions, the measurement methods, and the measurement/scoring
+fingerprint all match, against the same reference file. Share an anonymized result with: agentperf share result.json</p>
 </main><div id="tip" role="tooltip"></div></div>
 %%JS%%</body></html>"""
     page = (body.replace("%%TITLE%%", esc(title or "agentperf report: {}".format(result["label"])))
             .replace("%%CSS%%", _css())
-            .replace("%%VERDICT%%", esc(diagnose.verdict(sc["agentmark"])))
+            .replace("%%VERDICT%%", esc(diagnose.verdict(
+                sc["agentmark"], (result.get("system") or {}).get("os_family"))))
             .replace("%%REF%%", esc(reference["label"]))
             .replace("%%VERSION%%", esc(PACKAGE_VERSION))
             .replace("%%DATE%%", esc(datetime.date.today().isoformat()))
@@ -715,7 +760,7 @@ suite version, corpus hash, and reference. Share an anonymized result with: agen
             .replace("%%TILES%%", tiles)
             .replace("%%PLACEMENT%%", place_chart)
             .replace("%%PLACENOTE%%", esc(place["note"]) +
-                     " Faster than {} of {} bundled profile(s).".format(place["faster_than"], place["of"]))
+                     " Faster than {} of {} bundled profiles.".format(place["faster_than"], place["of"]))
             .replace("%%WINS%%", _cause_cards(result, reference))
             .replace("%%DRAGS%%", drag_items)
             .replace("%%ATTR%%", _attribution_sections(result, reference))

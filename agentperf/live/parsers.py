@@ -77,6 +77,11 @@ class _Base(object):
         raise NotImplementedError
 
     def result(self, wall_s):
+        # Close unfinished tool intervals at the end of the run: a tool
+        # that was still running at timeout spent real local time.
+        end_t = self.t0 + wall_s
+        for tool_id in list(self.pending):
+            self._tool_end(end_t, tool_id)
         startup = (self.first_t - self.t0) if self.first_t is not None else wall_s
         startup = max(0.0, min(startup, wall_s))
         return {

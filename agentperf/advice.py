@@ -49,7 +49,7 @@ def advise(result: Dict[str, object]) -> List[Dict[str, str]]:
                                       "restarting.".format(", ".join("{} {:.0f}%".format(p["name"], p["cpu"]) for p in heavy)))
     noisy = [b for b, e in result["benchmarks"].items() if e.get("noisy") and e.get("scored")]
     if len(noisy) >= 4:
-        add("warn", "Noise", "{} scored tests varied by more than 15% between runs: {}.".format(
+        add("warn", "Noise", "{} scored tests varied by more than 15% between samples: {}.".format(
             len(noisy), ", ".join(sorted(noisy)[:6])))
 
     # --- tuning tips
@@ -59,9 +59,9 @@ def advise(result: Dict[str, object]) -> List[Dict[str, str]]:
                                     "call.".format(shell))
     login = _median(result, "diag.login_shell")
     if login and login > 100:
-        add("tip", "Shell startup", "Your login shell takes {:.0f} ms to start. Codex runs every command "
-                                    "in a login shell (zsh -lc), so it pays this each time. Trim slow lines in "
-                                    "your shell profile (version managers, plugin frameworks).".format(login))
+        add("tip", "Shell startup", "Your login shell takes {:.0f} ms to start, timed as Codex runs it "
+                                    "(zsh -lc: login files such as .zprofile, not .zshrc). Codex pays this "
+                                    "on every command. Trim slow lines in your login files.".format(login))
     status = _median(result, "git.status")
     fsmon = _median(result, "diag.git_fsmonitor")
     if status and fsmon and fsmon < 0.7 * status:
@@ -100,8 +100,9 @@ def advise(result: Dict[str, object]) -> List[Dict[str, str]]:
                                   .format(ps, shell))
     plan = str(s.get("power_plan", "")).lower()
     if plan and ("saver" in plan or "balanced" in plan):
-        add("tip", "Power plan", "The Windows power plan is '{}'. 'High performance' or 'Ultimate "
-                                 "performance' cuts process-start and I/O latency.".format(s.get("power_plan")))
+        add("info", "Power plan", "The Windows power plan is '{}'. A performance plan can cut burst "
+                                  "latency, but agentperf has not measured the gain; the reference "
+                                  "host used a balanced plan too. Rerun after changing it to see.".format(s.get("power_plan")))
     gov = s.get("governor")
     if gov and gov not in ("performance", "schedutil"):
         add("tip", "CPU governor", "The CPU governor is '{}'. 'performance' or 'schedutil' responds "

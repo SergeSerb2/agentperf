@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 _RULES = (" Work only inside this repository. Do not install anything. "
           "Do not ask questions; finish the task, then stop.")
@@ -59,13 +60,62 @@ if __name__ == "__main__":
 '''
 
 
-def _run_tests(repo, timeout=120):
+# The fixture ships 8 tests (3 sequences + 2 labels + 2 numbers + 1 consumer).
+# Verifiers require at least that many to actually execute, so an empty
+# suite (for example via a load_tests hook) can never read as success.
+FIXTURE_TEST_COUNT = 8
+HIDDEN_TEST_COUNT = 5
+
+
+def _ran_count(out):
+    m = re.search(r"Ran (\d+) test", out or "")
+    return int(m.group(1)) if m else 0
+
+
+def _run_tests(repo, timeout=120, min_tests=FIXTURE_TEST_COUNT):
     proc = subprocess.run(
         [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."],
         cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", timeout=timeout)
-    tail = (proc.stdout or "").strip().splitlines()
-    return proc.returncode == 0, (tail[-1] if tail else "")
+    out = proc.stdout or ""
+    tail = out.strip().splitlines()
+    detail = tail[-1] if tail else ""
+    ran = _ran_count(out)
+    if proc.returncode == 0 and ran < min_tests:
+        return False, "only {} of at least {} expected tests ran".format(ran, min_tests)
+    return proc.returncode == 0, detail
+
+
+def _run_hidden(repo, timeout=120):
+    """Run the hidden tests from outside the repo's tests package.
+
+    The agent controls the repo, including unittest discovery hooks there.
+    The hidden file lives in a fresh temp directory and runs as a plain
+    script, importing only the package under test."""
+    tmpdir = tempfile.mkdtemp(prefix="agentperf-hidden-")
+    hidden = os.path.join(tmpdir, "test_hidden_clamp.py")
+    try:
+        with open(hidden, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(_HIDDEN_TEST)
+        env = dict(os.environ)
+        env["PYTHONPATH"] = repo + os.pathsep + env.get("PYTHONPATH", "")
+        proc = subprocess.run(
+            [sys.executable, hidden], cwd=repo, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            encoding="utf-8", errors="replace", timeout=timeout)
+        out = proc.stdout or ""
+        ran = _ran_count(out)
+        tail = out.strip().splitlines()
+        detail = tail[-1] if tail else ""
+        if proc.returncode == 0 and ran != HIDDEN_TEST_COUNT:
+            return False, "hidden suite ran {} tests, expected {}".format(ran, HIDDEN_TEST_COUNT)
+        return proc.returncode == 0, detail
+    finally:
+        try:
+            os.remove(hidden)
+            os.rmdir(tmpdir)
+        except OSError:
+            pass
 
 
 def _git_changed(repo, pathspec=None):
@@ -73,7 +123,7 @@ def _git_changed(repo, pathspec=None):
     if pathspec:
         cmd += ["--", pathspec]
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          encoding="utf-8", errors="replace")
+                          encoding="utf-8", errors="replace", timeout=60)
     paths = [line[3:] for line in proc.stdout.splitlines() if line.strip()]
     # Running the tests writes bytecode caches; they are not edits.
     return [p for p in paths if "__pycache__" not in p and not p.endswith(".pyc")]
@@ -111,18 +161,12 @@ def _verify_rename(repo):
 
 
 def _verify_feature(repo):
-    hidden = os.path.join(repo, "tests", "test_hidden_clamp.py")
-    with open(hidden, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(_HIDDEN_TEST)
-    try:
-        ok, detail = _run_tests(repo)
-    finally:
-        try:
-            os.remove(hidden)
-        except OSError:
-            pass
+    ok, detail = _run_tests(repo)
     if not ok:
-        return False, "tests (incl. hidden) fail: " + detail
+        return False, "repo tests fail: " + detail
+    ok, detail = _run_hidden(repo)
+    if not ok:
+        return False, "hidden tests fail: " + detail
     return True, "repo and hidden tests pass"
 
 

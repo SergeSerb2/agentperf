@@ -8,11 +8,13 @@ distros reached through a Windows host.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
 import subprocess
 import tempfile
+import uuid
 import zipfile
 from typing import List, Optional
 
@@ -35,11 +37,18 @@ def quote_posix(argv: List[str]) -> str:
 
 
 def quote_powershell(argv: List[str]) -> str:
-    """Join argv for a PowerShell command line (single quotes, '' escapes a quote)."""
+    """Join argv for a PowerShell command line (single quotes, '' escapes a quote).
+
+    A quoted executable path needs the call operator ``&`` or PowerShell
+    treats it as a string literal, so prefix ``&`` when argv[0] is quoted.
+    """
     out = []
     for arg in argv:
         out.append(arg if _PS_BARE.match(arg) else "'" + arg.replace("'", "''") + "'")
-    return " ".join(out)
+    joined = " ".join(out)
+    if out and out[0].startswith("'"):
+        joined = "& " + joined
+    return joined
 
 
 def _running_archive() -> Optional[str]:
@@ -116,7 +125,8 @@ def run_remote(args) -> int:
         if subprocess.run(SCP + [pyz, "{}:.agentperf/agentperf.pyz".format(host)]).returncode != 0:
             raise SystemExit("could not copy agentperf.pyz to " + host)
 
-    remote_out = ".agentperf/result-{}.json".format(label)
+    # Unique per invocation: a failed run must never fetch an older result.
+    remote_out = ".agentperf/result-{}-{}.json".format(label, uuid.uuid4().hex[:10])
     sub: List[str] = [getattr(args, "mode", "run") or "run"]
     if sub[0] == "run":
         sub += ["--label", label, "--profile", args.profile, "--out", remote_out]
@@ -151,6 +161,20 @@ def run_remote(args) -> int:
     local = os.path.join(args.out_dir, "{}{}.json".format(label, "" if sub[0] == "run" else "-" + sub[0]))
     fetched = subprocess.run(SCP + ["{}:{}".format(host, remote_out), local]).returncode == 0
     if fetched:
+        # The fetched file must be this run's result, not something else.
+        try:
+            with open(local, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            if doc.get("label") != label:
+                print("fetched result label {!r} does not match {!r}; refusing it".format(
+                    doc.get("label"), label))
+                fetched = False
+        except (OSError, ValueError) as exc:
+            print("fetched result is not valid JSON: {}".format(exc))
+            fetched = False
+    if fetched:
         print("Fetched {}".format(local))
         _ssh(host, ("Remove-Item -Force " if windows else "rm -f ") + remote_out)
-    return 0 if fetched else (code or 1)
+    if code != 0:
+        return code  # the remote failure status wins, fetched file or not
+    return 0 if fetched else 1

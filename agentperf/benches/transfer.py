@@ -9,7 +9,7 @@ import shutil
 import tarfile
 
 from ..registry import Skip, bench
-from ..util import IS_LINUX, IS_MAC, IS_WINDOWS, now, rmtree, run
+from ..util import IS_LINUX, IS_MAC, IS_WINDOWS, buffered_copy, copy_tree_buffered, now, rmtree, run
 
 BIG_MB = 256
 CHUNK = 4 * 1024 * 1024
@@ -173,9 +173,11 @@ def copy_big(ctx):
     dst = os.path.join(base, "dst.bin")
     _write_big(src, _block())
 
+    ctx.note("transfer.copy", method="buffered read/write copy (no clone/reflink)")
+
     def sample():
         t0 = now()
-        shutil.copyfile(src, dst)
+        buffered_copy(src, dst)
         fd = os.open(dst, os.O_RDWR | getattr(os, "O_BINARY", 0))
         try:
             flush_to_device(fd)
@@ -196,11 +198,13 @@ def copy_tree(ctx):
     mb = ctx.corpus.total_bytes / (1024.0 * 1024.0)
     counter = [0]
 
+    ctx.note("transfer.copy_tree", method="buffered read/write copy (no clone/reflink)")
+
     def sample():
         counter[0] += 1
         dst = os.path.join(base, "copy{}".format(counter[0]))
         t0 = now()
-        shutil.copytree(ctx.corpus.tree, dst)
+        copy_tree_buffered(ctx.corpus.tree, dst)
         secs = now() - t0
         rmtree(dst)
         return mb / secs
@@ -209,8 +213,11 @@ def copy_tree(ctx):
 
 
 def _corpus_targz(ctx) -> str:
-    """A reproducible .tar.gz of the corpus (fixed order, mtimes, and owners)."""
-    path = os.path.join(ctx.workdir, "corpus.tar.gz")
+    """A reproducible .tar.gz of the corpus (fixed order, mtimes, and owners).
+
+    The cached archive is keyed by fixture hash, so a regenerated corpus can
+    never be paired with a stale archive."""
+    path = os.path.join(ctx.workdir, "corpus-{}.tar.gz".format(ctx.corpus.fixture_hash))
     if os.path.exists(path):
         return path
     raw = io.BytesIO()

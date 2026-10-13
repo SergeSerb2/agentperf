@@ -1,8 +1,10 @@
 """Harness command construction and streamed process execution."""
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -66,6 +68,35 @@ def display_command(cmd):
     return shlex.join(cmd)
 
 
+def _kill_tree(proc):
+    """Terminate the whole process tree, then reap the direct child.
+
+    Killing only the CLI would leave its tool subprocesses running while
+    verification and cleanup proceed on the same files."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            if os.name != "nt":
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:
+                proc.kill()
+        except OSError:
+            pass
+        proc.wait()
+
+
 def run_streamed(harness, cmd, prompt, cwd, timeout):
     """Run *cmd*, stamp each stdout line on arrival, return timing dict.
 
@@ -79,7 +110,8 @@ def run_streamed(harness, cmd, prompt, cwd, timeout):
     try:
         proc = subprocess.Popen(
             cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=err_file, encoding="utf-8", errors="replace")
+            stderr=err_file, encoding="utf-8", errors="replace",
+            start_new_session=(os.name != "nt"))
     except OSError as exc:
         result["error"] = "launch failed: %s" % exc
         result.update(parser.result(0.0))
@@ -111,11 +143,7 @@ def run_streamed(harness, cmd, prompt, cwd, timeout):
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         result["error"] = "timed out after %s s" % timeout
-        try:
-            proc.kill()
-        except OSError:
-            pass
-        proc.wait()
+        _kill_tree(proc)
     wall = time.monotonic() - t0
     reader.join(timeout=10)
 

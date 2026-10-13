@@ -16,12 +16,13 @@ power and indexing flags). A shared result must still explain itself.
 from __future__ import annotations
 
 import copy
+import ipaddress
 import os
 import re
 from typing import Dict, List, Tuple
 
 # Keys dropped from system outright.
-_DROP_SYSTEM = ("hostname", "workdir", "top_processes", "physical_disks",
+_DROP_SYSTEM = ("hostname", "workdir", "cwd", "top_processes", "physical_disks",
                 "fs_device", "fs_mount", "model_id")
 
 _HOME_CAPTURE = [
@@ -30,17 +31,40 @@ _HOME_CAPTURE = [
     re.compile(r"[A-Za-z]:\\Users\\([^\\\"'\s]+)"),
     re.compile(r"[A-Za-z]:/Users/([^/\"'\s]+)"),
 ]
+# Home paths: the subpath under a home directory is private too (client
+# names, project names), so the whole path token is generalized. Volume
+# names under /Volumes can name clients or projects as well.
 _HOME_RE = [
-    (re.compile(r"/Users/[^/\"'\\\s]+"), "/Users/<user>"),
-    (re.compile(r"/home/[^/\"'\\\s]+"), "/home/<user>"),
-    (re.compile(r"[A-Za-z]:\\Users\\[^\\\"'\s]+"), r"C:\Users\<user>"),
-    (re.compile(r"[A-Za-z]:/Users/[^/\"'\s]+"), "C:/Users/<user>"),
+    (re.compile(r"/Users/[^/\"'\\\s]+(?:/[^\s\"':]*)?"), "/Users/<user>"),
+    (re.compile(r"/home/[^/\"'\\\s]+(?:/[^\s\"':]*)?"), "/home/<user>"),
+    (re.compile(r"/Volumes/[^\n\":]+:"), "/Volumes/<volume>:"),
+    (re.compile(r"/Volumes/[^/\s\"':]+(?:/[^\s\"':]*)?"), "/Volumes/<volume>"),
+    (re.compile(r"[A-Za-z]:\\Users\\[^\\\"'\s]+(?:\\[^\s\"']*)?"), r"C:\Users\<user>"),
+    (re.compile(r"[A-Za-z]:/Users/[^/\"'\s]+(?:/[^\s\"']*)?"), "C:/Users/<user>"),
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
-    (re.compile(r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b"
-                r"|\b[0-9a-fA-F]{0,4}::[0-9a-fA-F:]+\b"), "<ip>"),
     (re.compile(r"\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b"), "<mac>"),
     (re.compile(r"\b[\w.-]+\.ts\.net\b"), "<host>"),
 ]
+# Candidate IPv6 tokens; each is validated with ipaddress so the *whole*
+# address (including its network prefix) is replaced, never a suffix.
+_IPV6_CANDIDATE = re.compile(
+    r"(?<![0-9A-Fa-f:.])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}"
+    r"(?:\.\d{1,3}){0,3}(?![0-9A-Fa-f:.])|::(?:[0-9A-Fa-f]{1,4}:)*[0-9A-Fa-f:]*")
+
+
+def _scrub_ipv6(value: str, counter=None) -> str:
+    def repl(match):
+        token = match.group(0)
+        try:
+            addr = ipaddress.ip_address(token)
+        except ValueError:
+            return token
+        if not isinstance(addr, ipaddress.IPv6Address):
+            return token
+        if counter is not None:
+            counter[0] += 1
+        return "<ip>"
+    return _IPV6_CANDIDATE.sub(repl, value)
 _NOT_NAMES = {"<user>", "shared", "public", "default", "users", "home"}
 
 
@@ -75,6 +99,7 @@ def _candidate_names(doc) -> List[str]:
 def _scrub_text(value, names=(), counter=None):
     if not isinstance(value, str):
         return value
+    value = _scrub_ipv6(value, counter)
     for rx, repl in _HOME_RE:
         value, n = rx.subn(lambda m, r=repl: r, value)
         if counter is not None:
@@ -141,17 +166,40 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
             tools[key] = os.path.basename(str(value).replace("\\", "/"))
     if tools:
         changes.append("tool paths reduced to file names")
+    # Structured path-bearing fields: keep the fact, drop the path. The
+    # Spotlight probe embeds the volume path, which can name a client.
+    spot = system.get("spotlight")
+    if isinstance(spot, str) and ("/" in spot or "\\" in spot):
+        system["spotlight"] = ("Indexing enabled" if "Indexing enabled" in spot
+                                else "Indexing disabled" if "Indexing disabled" in spot
+                                else "unknown")
+        changes.append("spotlight volume path generalized")
     # Scrub home paths, addresses, and known user/host names in kept strings.
+    # Run ids are removed and timestamps are cut to the day at every depth,
+    # including inside combined_runs/merged_runs.
     counter = [0]
+    nested_ids = [0]
 
     def scrub(node):
         if isinstance(node, dict):
-            return {k: scrub(v) for k, v in node.items()}
+            out_dict = {}
+            for k, v in node.items():
+                if k == "run_id":
+                    nested_ids[0] += 1
+                    continue
+                if k == "started_at" and isinstance(v, str):
+                    out_dict[k] = v[:10]
+                    continue
+                out_dict[k] = scrub(v)
+            return out_dict
         if isinstance(node, list):
             return [scrub(v) for v in node]
         return _scrub_text(node, names, counter)
 
     out = scrub(out)
+    if nested_ids[0]:
+        changes.append("removed {} nested run id(s) and cut nested timestamps "
+                       "to the day".format(nested_ids[0]))
     if counter[0]:
         changes.append("scrubbed {} private string(s) (home paths, IP/MAC addresses, "
                        "user/host names) in kept fields".format(counter[0]))

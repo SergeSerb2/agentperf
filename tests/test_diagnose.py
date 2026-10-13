@@ -71,7 +71,11 @@ class DiagnoseTest(unittest.TestCase):
         items = diagnose.causes(win, REF)
         self.assertTrue(items)
         self.assertIn("WSL2", items[0]["topic"])
-        self.assertIn("67", items[0]["summary"])
+        # The same-PC gap must carry its conditions, never a bare number.
+        evidence = " ".join(items[0]["evidence"])
+        self.assertIn("endpoint", evidence)
+        self.assertIn("Git Bash", evidence)
+        self.assertIn("no run with", evidence)
         self.assertTrue(items[0]["evidence"])
 
     def test_mnt_workdir_is_top_finding_in_wsl(self):

@@ -9,12 +9,13 @@ lowers coverage instead.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from typing import Dict, Iterable, List, Optional, Set
 
 from .registry import CATEGORY_WEIGHTS
-from .util import bootstrap_medians, geomean, percentile
+from .util import bootstrap_medians, geomean, median, percentile
 
 # Local wait per 100 tool calls. Counts come from 6,416 Claude Code tool calls
 # on the author's machine (Bash 79%, Read 9%, Write+Edit 3.4%, other 8.6%).
@@ -105,13 +106,48 @@ def _definition(entry):
             bool(entry.get("lower_is_better")), entry.get("ops"))
 
 
+def _method(entry):
+    """How a benchmark measured, where that can differ between machines."""
+    meta = entry.get("meta") or {}
+    parts = []
+    for key in ("method", "impl", "shell_kind"):
+        if meta.get(key):
+            parts.append("{}={}".format(key, meta[key]))
+    return ";".join(parts)
+
+
+def fingerprint(doc, restrict=None) -> str:
+    """Measurement/scoring fingerprint: one short hash of what was measured.
+
+    Covers the corpus fixture, every scored benchmark's definition and
+    title, its recorded measurement method, and the category weights. Two
+    results are comparable only when corpus, definitions, methods, and
+    fingerprint all match (see compatibility_warnings). Version strings
+    alone never decide comparability. ``restrict`` limits the hash to a
+    set of benchmark ids, so two documents can be fingerprinted over the
+    tests they share.
+    """
+    h = hashlib.sha256()
+    h.update(("corpus=" + str((doc.get("corpus") or {}).get("fixture_hash") or "")).encode())
+    h.update(repr(sorted(CATEGORY_WEIGHTS.items())).encode())
+    for bid in sorted((doc.get("benchmarks") or {})):
+        if restrict is not None and bid not in restrict:
+            continue
+        entry = doc["benchmarks"][bid]
+        if not entry.get("scored"):
+            continue
+        h.update(repr((bid, _definition(entry), entry.get("title"), _method(entry))).encode())
+    return h.hexdigest()[:16]
+
+
 def compatibility_warnings(result, reference) -> List[str]:
     """Reasons these two documents may not be strictly comparable.
 
-    Comparability rests on what was actually measured: the corpus fixture
-    hash and the scored benchmark definitions recorded in each file. Suite
-    version strings are printed in reports but are not the key: the bundled
-    0.1.0 profiles carry definitions identical to the 0.2.x suite.
+    The one comparability contract, used in every report and doc: scores
+    compare only when the corpus fixture hash, the scored benchmark
+    definitions, the measurement methods, and the measurement/scoring
+    fingerprint all match, against the same reference file. Version
+    strings are printed for context but never decide comparability.
     """
     warnings: List[str] = []
     mine = (result.get("corpus") or {}).get("fixture_hash")
@@ -133,6 +169,32 @@ def compatibility_warnings(result, reference) -> List[str]:
                                                  if len(differ) > 5 else "")
         warnings.append("scored benchmark definitions differ for {}: scores are not "
                         "strictly comparable.".format(shown))
+    method_differ = []
+    for bid, entry in (result.get("benchmarks") or {}).items():
+        ref_entry = (reference.get("benchmarks") or {}).get(bid)
+        if ref_entry and (entry.get("scored") or ref_entry.get("scored")) \
+                and _method(entry) != _method(ref_entry):
+            method_differ.append("{} ({} vs {})".format(
+                bid, _method(entry) or "unrecorded", _method(ref_entry) or "unrecorded"))
+    if method_differ:
+        shown = "; ".join(sorted(method_differ)[:3]) + (
+            " and {} more".format(len(method_differ) - 3) if len(method_differ) > 3 else "")
+        extra = ""
+        if any(d.startswith("transfer.read") for d in method_differ):
+            extra = (" transfer.read is about 2% of AgentMark; compare that "
+                     "test only between machines that used the same cold-read method.")
+        warnings.append("measurement methods differ for {}.{}".format(shown, extra))
+    # Fingerprint over the shared scored tests only: a missing test lowers
+    # coverage; it must not look like a different measurement.
+    shared = {b for b, e in (result.get("benchmarks") or {}).items()
+              if e.get("scored") and (reference.get("benchmarks") or {}).get(b, {}).get("scored")}
+    if shared and not differ and not method_differ:
+        mine_fp = fingerprint(result, shared)
+        theirs_fp = fingerprint(reference, shared)
+        if mine_fp != theirs_fp:
+            warnings.append("measurement/scoring fingerprints differ ({} vs {}): what was "
+                            "measured or how it was weighted changed, so scores are not "
+                            "strictly comparable.".format(mine_fp, theirs_fp))
     return warnings
 
 
@@ -144,9 +206,33 @@ def score(result, reference, restrict: Optional[Set[str]] = None, rounds: int = 
     out["benchmarks"] = {b: 1000 * r for b, r in ratios.items()}
     out["coverage"] = coverage(result, reference, cats, category_weights)
     out["compared"] = sorted(cats)
-    # Bootstrap: resample this machine's samples per benchmark; the reference stays fixed.
+    # Bootstrap the actual estimator; the reference stays fixed. For a
+    # combined result the point estimate is the median of per-run medians,
+    # so resample hierarchically: runs with replacement, then samples
+    # within each chosen run, then the median of those run medians.
+    # Pooling samples would estimate a different quantity and can exclude
+    # the point estimate.
     rng = random.Random(seed)
-    boot = {b: bootstrap_medians(result["benchmarks"][b]["samples"], rounds, rng) for b in cats}
+
+    def boot_values(entry):
+        runs = entry.get("run_samples")
+        if runs and len(runs) >= 2:
+            values = []
+            clean = [[float(s) for s in r] for r in runs if r]
+            for _ in range(rounds):
+                medians = []
+                for _run in range(len(clean)):
+                    chosen = clean[rng.randrange(len(clean))]
+                    medians.append(median([chosen[rng.randrange(len(chosen))]
+                                           for _i in range(len(chosen))]))
+                values.append(median(medians))
+            return values
+        return bootstrap_medians(entry["samples"], rounds, rng)
+
+    combined = any((result["benchmarks"][b].get("run_samples") or []) and
+                   len(result["benchmarks"][b]["run_samples"]) >= 2 for b in cats)
+    out["ci_kind"] = "bootstrap over runs and samples" if combined else "within-run interval"
+    boot = {b: boot_values(result["benchmarks"][b]) for b in cats}
     marks, reaches = [], []
     for i in range(rounds):
         rr = {b: _ratio(result["benchmarks"][b], reference["benchmarks"][b], boot[b][i]) for b in cats}
@@ -155,8 +241,17 @@ def score(result, reference, restrict: Optional[Set[str]] = None, rounds: int = 
             marks.append(agg["agentmark"])
         if agg["reach"]:
             reaches.append(agg["reach"])
-    out["agentmark_ci"] = [percentile(marks, 0.05), percentile(marks, 0.95)] if marks else None
-    out["reach_ci"] = [percentile(reaches, 0.05), percentile(reaches, 0.95)] if reaches else None
+
+    def interval(values, point):
+        if not values:
+            return None
+        lo, hi = percentile(values, 0.05), percentile(values, 0.95)
+        if point:  # an interval must never exclude its own point estimate
+            lo, hi = min(lo, point), max(hi, point)
+        return [lo, hi]
+
+    out["agentmark_ci"] = interval(marks, out.get("agentmark"))
+    out["reach_ci"] = interval(reaches, out.get("reach"))
     return out
 
 
@@ -183,7 +278,17 @@ def lw100(result, restrict: Optional[Iterable[str]] = None) -> Dict[str, object]
         seconds = count * ms / 1000.0
         lines.append({"label": label, "count": count, "ms_each": ms, "seconds": seconds})
         total += seconds
-    return {"seconds": total, "lines": lines, "missing": missing}
+    # Nothing measured is "not available", never a fake 0.0 s.
+    return {"seconds": total if lines else None, "lines": lines, "missing": missing}
+
+
+def lw100_common(result, reference):
+    """LW100 for both docs on the same component set, so they compare.
+
+    Returns (mine, theirs); each is an lw100() dict restricted to the
+    benchmarks both documents have."""
+    both = set(result["benchmarks"]) & set(reference["benchmarks"])
+    return lw100(result, both), lw100(reference, both)
 
 
 def common_benchmarks(results: List[Dict[str, object]]) -> Set[str]:

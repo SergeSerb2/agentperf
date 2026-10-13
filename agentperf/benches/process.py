@@ -12,22 +12,40 @@ from ..util import IS_WINDOWS, now, run
 _NO_WINDOW = {"creationflags": 0x08000000} if IS_WINDOWS else {}
 
 
+SPAWN_TIMEOUT_S = 30.0
+
+
 def _spawn_ms(argv, count: int) -> float:
+    """Time *count* launches. A launch that fails or hangs fails the test:
+    a broken tool must never earn a startup score."""
     t0 = now()
     for _ in range(count):
-        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, **_NO_WINDOW)
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=SPAWN_TIMEOUT_S, **_NO_WINDOW)
+        if proc.returncode != 0:
+            raise RuntimeError("{} exited with code {}".format(argv[0], proc.returncode))
     return (now() - t0) * 1000.0 / count
 
 
 def _shell_argv(ctx, command: str):
+    """The scored shell: bash with no profile files, on every OS.
+
+    Agents start bash or zsh, not dash. Scoring /bin/sh would score dash on
+    the Ubuntu reference against bash elsewhere. Git Bash on Windows is the
+    same shell family (and the shell Claude Code uses there). Where no bash
+    exists, fall back to sh and record it, so the difference is visible.
+    """
     (shell,) = ctx.need("shell")
-    if IS_WINDOWS:  # Git Bash, the shell Claude Code uses on Windows
+    name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    kind = "bash" if "bash" in name else "sh"
+    ctx.note("process.shell", shell_kind=kind, shell=name)
+    ctx.note("process.parallel", shell_kind=kind, shell=name)
+    if kind == "bash":
         return [shell, "--noprofile", "--norc", "-c", command]
     return [shell, "-c", command]
 
 
-@bench("process.shell", title="Shell spawn (sh -c true; Git Bash on Windows)", unit="ms",
+@bench("process.shell", title="Shell spawn (bash --noprofile --norc -c true)", unit="ms",
        lower_is_better=True, models="Every Bash tool call starts a shell", reps=7, warmup=1)
 def shell_spawn(ctx):
     argv = _shell_argv(ctx, "true")
@@ -68,8 +86,26 @@ def parallel_spawn(ctx):
         t0 = now()
         procs = [subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, **_NO_WINDOW) for _ in range(32)]
-        for proc in procs:
-            proc.wait()
+        try:
+            deadline = t0 + 120.0
+            for proc in procs:
+                proc.wait(timeout=max(0.1, deadline - now()))
+            bad = [p.returncode for p in procs if p.returncode != 0]
+            if bad:
+                raise RuntimeError("{} of 32 shells failed (first exit code {})".format(
+                    len(bad), bad[0]))
+        except BaseException:
+            for proc in procs:  # reap everything, whatever happened
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            for proc in procs:
+                try:
+                    proc.wait(timeout=10)
+                except Exception:
+                    pass
+            raise
         return (now() - t0) * 1000.0
 
     return sample
@@ -84,6 +120,7 @@ const t0 = performance.now();
 for (let i = 0; i < n; i++) {
   const r = spawnSync(shell, args, {stdio: 'ignore'});
   if (r.error) { console.error(String(r.error)); process.exit(1); }
+  if (r.status !== 0) { console.error('shell exited ' + r.status); process.exit(1); }
 }
 console.log(JSON.stringify({ms: (performance.now() - t0) / n}));
 """
@@ -96,8 +133,8 @@ console.log(JSON.stringify({ms: (performance.now() - t0) / n}));
        requires=("node", "shell"), reps=5)
 def node_spawn_diag(ctx):
     (node,) = ctx.need("node")
-    (shell,) = ctx.need("shell")
-    shell_args = ["--noprofile", "--norc", "-c", "true"] if IS_WINDOWS else ["-c", "true"]
+    argv = _shell_argv(ctx, "true")
+    shell, shell_args = argv[0], argv[1:]
 
     def sample():
         proc = run([node, "-e", _NODE_SPAWN_SCRIPT, shell, json.dumps(shell_args)], timeout=120)
@@ -108,14 +145,17 @@ def node_spawn_diag(ctx):
     return sample
 
 
-@bench("diag.login_shell", title="Login shell with your dotfiles ($SHELL -lic exit)", unit="ms",
-       lower_is_better=True, models="Harnesses that start login shells pay this per command",
+@bench("diag.login_shell", title="Login shell as Codex runs it ($SHELL -lc exit)", unit="ms",
+       lower_is_better=True,
+       models="Codex runs each command in a login shell (zsh -lc), which loads "
+              "login files (.zprofile) but not interactive ones (.zshrc)",
        reps=3, platforms=("macos", "linux", "wsl"))
 def login_shell(ctx):
     import os
     shell = os.environ.get("SHELL") or "/bin/sh"
-    ctx.note("diag.login_shell", shell=shell)
-    return lambda: _spawn_ms([shell, "-lic", "exit"], 3)
+    ctx.note("diag.login_shell", shell=shell.replace("\\", "/").rsplit("/", 1)[-1],
+             mode="-lc (login files only, as Codex runs it)")
+    return lambda: _spawn_ms([shell, "-lc", "exit"], 3)
 
 
 @bench("diag.powershell", title="PowerShell spawn (-NoProfile)", unit="ms", lower_is_better=True,

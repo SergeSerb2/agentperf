@@ -56,7 +56,19 @@ def _default_reference_name() -> Optional[str]:
     return data.decode("utf-8").strip() or None if data else None
 
 
+def _bundled_names() -> List[str]:
+    data = _read_bundled("index.json")
+    if not data:
+        return []
+    try:
+        return [p.get("name", "") for p in json.loads(data.decode("utf-8")).get("profiles", [])]
+    except ValueError:
+        return []
+
+
 def _load_reference(arg: Optional[str]):
+    """Load a reference. An explicitly named reference that does not exist
+    is an error; silently falling back would change the scoring baseline."""
     if arg and os.path.exists(arg):
         return scoring.load(arg)
     name = arg or _default_reference_name()
@@ -66,7 +78,13 @@ def _load_reference(arg: Optional[str]):
     if path:
         return scoring.load(path)
     data = _read_bundled(name + ".json")
-    return json.loads(data.decode("utf-8")) if data else None
+    if data:
+        return json.loads(data.decode("utf-8"))
+    if arg:
+        raise ValueError("no such reference: {!r} (not a file, and not a bundled "
+                         "profile{}). Run `agentperf references` to list them.".format(
+                             arg, ": " + ", ".join(_bundled_names()) if _bundled_names() else ""))
+    return None
 
 
 def _write_json(doc, path: str) -> None:
@@ -185,17 +203,23 @@ def _tilde(path: str) -> str:
 def cmd_doctor(args) -> int:
     """Fast pre-flight: tools, workdir, and the probes that affect scores. No benchmarks."""
     from . import env, tools
-    from .runner import MIN_FREE_GB, default_workdir
+    from .runner import MIN_FREE_GB, default_workdir, workdir_owned
     from .util import os_family
     workdir = os.path.abspath(os.path.expanduser(args.workdir or default_workdir()))
-    os.makedirs(workdir, exist_ok=True)
+    # Doctor creates nothing: probe the nearest existing ancestor instead.
+    probe_dir = workdir
+    while not os.path.isdir(probe_dir):
+        parent = os.path.dirname(probe_dir)
+        if parent == probe_dir:
+            break
+        probe_dir = parent
     print("agentperf {} (suite {}) on {} (Python {})".format(
         PACKAGE_VERSION, SUITE_VERSION, os_family(), sys.version.split()[0]))
     found = tools.find_tools()
     for name in sorted(found):
         shown = _tilde(found[name]) if found[name] else "NOT FOUND (related tests will skip)"
         print("  tool {:<10} {}".format(name, shown))
-    system = env.collect(workdir)
+    system = env.collect(probe_dir)
     for key in ("cpu_model", "os_version", "logical_cpus", "ram_gb", "fs_type",
                 "disk_free_gb", "power_source", "power_plan", "governor",
                 "defender_realtime", "dev_drive", "rotational", "raid_resync",
@@ -212,6 +236,12 @@ def cmd_doctor(args) -> int:
     if free is not None and free < MIN_FREE_GB:
         checks.append("only {:.1f} GB free on the work disk; a run needs {:.1f} GB and will stop".format(
             free, MIN_FREE_GB))
+    from .runner import _legacy_agentperf_dir
+    if os.path.isdir(workdir) and os.listdir(workdir) and not workdir_owned(workdir) \
+            and not _legacy_agentperf_dir(workdir):
+        checks.append("workdir {} is not empty and was not created by agentperf; a run "
+                      "will refuse it (it deletes its own corpus/repo/scratch inside). "
+                      "Pick an empty directory or the default.".format(_tilde(workdir)))
     if not found.get("git"):
         checks.append("git not found: all git tests will skip and coverage will drop")
     else:
@@ -262,17 +292,56 @@ def cmd_compare(args) -> int:
     return 0
 
 
-def combine_runs(docs):
-    """Median of per-run medians for each benchmark, with all samples pooled.
-    Several runs make a steadier reference than one."""
-    from .util import median, summarize
+def _check_combinable(docs, what: str) -> None:
+    """Refuse to mix results that did not measure the same things.
+
+    Checks machine identity, schema, corpus fixture, fingerprint, and —
+    for benchmarks present in more than one file — definition, unit, and
+    measurement method. Without this, a combined file can hide a mixture
+    that later comparability checks cannot detect."""
     def machine(doc):
         system = doc.get("system") or {}
         return (system.get("cpu_model"), system.get("os_family"))
     if len({machine(d) for d in docs}) > 1:
         raise ValueError("these results do not look like one machine (CPU model or OS "
-                         "family differ: {}); refusing to combine them".format(
-                             ", ".join(str(machine(d)) for d in docs)))
+                         "family differ: {}); refusing to {} them".format(
+                             ", ".join(str(machine(d)) for d in docs), what))
+    def distinct(values):
+        seen = []
+        for v in values:
+            if v is not None and v not in seen:
+                seen.append(v)
+        return seen
+    # Fingerprints are not compared whole here: a separate network pass
+    # legitimately contains a subset of benchmarks. The per-benchmark
+    # signature check below covers shared tests.
+    checks = [
+        ("schema", distinct([d.get("schema") for d in docs])),
+        ("corpus fixture hash", distinct([(d.get("corpus") or {}).get("fixture_hash") for d in docs])),
+    ]
+    for name, values in checks:
+        if len(values) > 1:
+            raise ValueError("these results have different {}s ({}); refusing to {} "
+                             "incompatible measurements".format(
+                                 name, ", ".join(str(v) for v in values), what))
+    seen = {}
+    for doc in docs:
+        for bid, entry in (doc.get("benchmarks") or {}).items():
+            sig = (scoring._definition(entry), entry.get("title"), scoring._method(entry))
+            if bid in seen and seen[bid] != sig:
+                raise ValueError("benchmark {} was measured differently across these "
+                                 "files (definition or method differs); refusing to "
+                                 "{} them".format(bid, what))
+            seen[bid] = sig
+
+
+def combine_runs(docs):
+    """Median of per-run medians for each benchmark.
+
+    Per-run samples are kept (``run_samples``) so scoring can bootstrap the
+    same estimator. Several runs make a steadier reference than one."""
+    from .util import median, summarize
+    _check_combinable(docs, "combine")
     combined = json.loads(json.dumps(docs[0]))
     for bid, entry in combined["benchmarks"].items():
         runs = [d["benchmarks"][bid] for d in docs if bid in d["benchmarks"]]
@@ -281,9 +350,12 @@ def combine_runs(docs):
         stats["median"] = median([float(r["median"]) for r in runs])
         entry.update(stats)
         entry["samples"] = pooled
+        entry["run_samples"] = [list(r["samples"]) for r in runs]
+        entry["run_medians"] = [float(r["median"]) for r in runs]
         entry["runs"] = len(runs)
         entry["noisy"] = stats["cv"] > 0.15
     combined["combined_runs"] = [{"run_id": d.get("run_id"), "started_at": d.get("started_at")} for d in docs]
+    combined["fingerprint"] = scoring.fingerprint(combined)
     return combined
 
 
@@ -309,6 +381,7 @@ def cmd_reference(args) -> int:
 def cmd_merge(args) -> int:
     """Combine result files of one machine (for example a separate network pass)."""
     docs = [scoring.load(p) for p in args.results]
+    _check_combinable(docs, "merge")
     merged = docs[0]
     for doc in docs[1:]:
         merged["benchmarks"].update(doc["benchmarks"])

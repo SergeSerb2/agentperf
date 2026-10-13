@@ -185,6 +185,67 @@ def fmt_gain(value: Optional[float]) -> str:
     return "{:,.0f}".format(round(float(value)))
 
 
+def fmt_ratio(value: Optional[float]) -> str:
+    """Speed ratio for display; never prints a misleading x0.00."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "-"
+    if 0 < value < 0.01:
+        return "<0.01"
+    return "{:.2f}".format(value)
+
+
+def version_tuple(text) -> tuple:
+    """Numeric version tuple from '3.11.9' style text; () when unparsable."""
+    out = []
+    for part in str(text or "").split("."):
+        digits = ""
+        for ch in part.strip():
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        out.append(int(digits) if digits else 0)
+    while len(out) < 3:
+        out.append(0)
+    return tuple(out)
+
+
+def buffered_copy(src: str, dst: str, bufsize: int = 4 * 1024 * 1024) -> None:
+    """Copy by explicit read/write, so bytes really move on every platform.
+
+    ``shutil`` fast paths can turn a copy into a metadata clone (reflink via
+    ``copy_file_range`` on some filesystems). Scored copies must not do that.
+    """
+    sfd = os.open(src, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    try:
+        dfd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o644)
+        try:
+            while True:
+                data = os.read(sfd, bufsize)
+                if not data:
+                    break
+                view = memoryview(data)
+                while view:
+                    written = os.write(dfd, view)
+                    view = view[written:]
+        finally:
+            os.close(dfd)
+    finally:
+        os.close(sfd)
+
+
+def copy_tree_buffered(src: str, dst: str) -> None:
+    """Copy a directory tree with buffered_copy for every file."""
+    os.makedirs(dst)
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_root = dst if rel == "." else os.path.join(dst, rel)
+        for name in dirs:
+            os.makedirs(os.path.join(target_root, name), exist_ok=True)
+        for name in files:
+            buffered_copy(os.path.join(root, name), os.path.join(target_root, name))
+
+
 def fmt_bytes(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(n) < 1024 or unit == "TB":

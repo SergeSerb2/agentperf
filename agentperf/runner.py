@@ -39,7 +39,85 @@ def _selected(bench_id: str, only: Optional[List[str]], exclude: Optional[List[s
     return not (exclude and hit(exclude))
 
 
+def _validate_selectors(only: Optional[List[str]], exclude: Optional[List[str]]) -> None:
+    """Every selector must match at least one known benchmark id or category."""
+    ids = [b.id for b in REGISTRY]
+    for kind, patterns in (("--only", only or []), ("--exclude", exclude or [])):
+        for pattern in patterns:
+            if not any(fnmatch.fnmatch(i, pattern) or i.startswith(pattern + ".") for i in ids):
+                raise SystemExit(
+                    "{} selector {!r} matches no benchmark. Run `agentperf list` "
+                    "to see the ids and categories.".format(kind, pattern))
+
+
 LOCK_NAME = ".agentperf-run.lock"
+MARKER_NAME = ".agentperf-owned"
+# Everything agentperf may create or delete inside an owned work directory.
+_OWNED_ENTRIES = ("corpus", "repo", "scratch", "corpus.tar.gz", "empty.gitconfig",
+                  "no-hooks", LOCK_NAME, MARKER_NAME)
+
+
+def workdir_owned(workdir: str) -> bool:
+    return os.path.isfile(os.path.join(workdir, MARKER_NAME))
+
+
+def _legacy_agentperf_dir(workdir: str) -> bool:
+    """True for a work directory made by agentperf before ownership markers:
+    it holds a corpus manifest that only agentperf writes."""
+    import json as _json
+    try:
+        with open(os.path.join(workdir, "corpus", "corpus.json"), encoding="utf-8") as fh:
+            data = _json.load(fh)
+        return bool(data.get("fixture_hash")) and "files" in data
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def prepare_workdir(workdir: str) -> None:
+    """Claim *workdir* for agentperf, or refuse before touching anything.
+
+    A missing directory is created. An existing empty directory, or one that
+    carries the ownership marker from an earlier run, is claimed. Any other
+    non-empty directory is refused: agentperf must never delete a user's
+    files (it removes corpus/, repo/, and scratch/ inside its workdir).
+    """
+    if os.path.exists(workdir) and not os.path.isdir(workdir):
+        raise SystemExit("--workdir {} exists and is not a directory.".format(workdir))
+    if os.path.isdir(workdir) and not workdir_owned(workdir) and _legacy_agentperf_dir(workdir):
+        pass  # a pre-0.3.0 work directory: claim it below by writing the marker
+    elif os.path.isdir(workdir) and not workdir_owned(workdir) and os.listdir(workdir):
+        raise SystemExit(
+            "--workdir {} is not empty and was not created by agentperf "
+            "(no {} marker). Refusing to use it, because a run deletes its "
+            "own corpus, repo, and scratch folders inside the work directory. "
+            "Pick an empty directory, a new path, or the default "
+            "(~/.agentperf/work).".format(workdir, MARKER_NAME))
+    os.makedirs(workdir, exist_ok=True)
+    marker = os.path.join(workdir, MARKER_NAME)
+    if not os.path.exists(marker):
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write("This directory is managed by agentperf. A run may delete "
+                     "corpus/, repo/, and scratch/ inside it.\n")
+
+
+def _clean_owned(workdir: str) -> None:
+    """Remove only agentperf-owned entries, then the directory if it is empty."""
+    if not workdir_owned(workdir):
+        return
+    for name in os.listdir(workdir):
+        if name in _OWNED_ENTRIES or name.startswith("corpus-") and name.endswith(".tar.gz"):
+            path = os.path.join(workdir, name)
+            if os.path.isdir(path) and not os.path.islink(path):
+                rmtree(path)
+            else:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    try:
+        os.rmdir(workdir)
+    except OSError:
+        pass  # not empty: something not owned is inside; leave it alone
 
 
 def _acquire_lock(workdir: str) -> str:
@@ -61,25 +139,35 @@ def run_suite(workdir: str, profile: str = "standard", label: Optional[str] = No
               only: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
               fetch: bool = False, clean: bool = False,
               log: Callable[[str], None] = print) -> Dict[str, object]:
-    os.makedirs(workdir, exist_ok=True)
+    _validate_selectors(only, exclude)
+    prepare_workdir(workdir)
     free_gb = shutil.disk_usage(workdir).free / 1e9
     if free_gb < MIN_FREE_GB:
         raise SystemExit("Only {:.1f} GB free at {}; agentperf needs {:.1f} GB.".format(
             free_gb, workdir, MIN_FREE_GB))
     lock = _acquire_lock(workdir)
     try:
-        return _run_locked(workdir, profile, label, only, exclude, fetch, clean, log)
+        doc = _run_locked(workdir, profile, label, only, exclude, fetch, log)
+        # All cleanup happens while the lock is held, so a following run
+        # cannot create scratch that this run then deletes.
+        rmtree(os.path.join(workdir, "scratch"))
+        if clean:
+            _clean_owned(workdir)
+        return doc
     finally:
+        try:
+            rmtree(os.path.join(workdir, "scratch"))
+        except Exception:
+            pass
         try:
             os.remove(lock)
         except OSError:
             pass
-        rmtree(os.path.join(workdir, "scratch"))
 
 
 def _run_locked(workdir: str, profile: str, label: Optional[str],
                 only: Optional[List[str]], exclude: Optional[List[str]],
-                fetch: bool, clean: bool,
+                fetch: bool,
                 log: Callable[[str], None]) -> Dict[str, object]:
     reps_mult, max_warmup, budget_mult = PROFILES[profile]
     started = datetime.datetime.now(datetime.timezone.utc)
@@ -148,6 +236,17 @@ def _run_locked(workdir: str, profile: str, label: Optional[str],
         log("{} {:>10.3f} {:<7} cv {:>4.0%}{}".format(prefix, stats["median"], b.unit, stats["cv"],
                                                     "  (noisy)" if entry["noisy"] else ""))
 
+    # An empty or all-failed run is a failure, never a silent success.
+    applicable_scored = [b for b in chosen
+                         if b.scored and (not b.platforms or ctx.os_family in b.platforms)]
+    if not results:
+        raise SystemExit(
+            "No benchmark produced a result ({} skipped or failed). "
+            "Run `agentperf doctor` to check tools and the work directory.".format(len(skipped)))
+    if applicable_scored and not any(b.id in results for b in applicable_scored):
+        raise SystemExit(
+            "No scored benchmark succeeded ({} skipped or failed); there is "
+            "nothing to score. Run `agentperf doctor` to check tools.".format(len(skipped)))
     rmtree(os.path.join(workdir, "scratch"))
     if hasattr(os, "getloadavg"):
         system["load_avg_end"] = [round(x, 2) for x in os.getloadavg()]
@@ -169,6 +268,6 @@ def _run_locked(workdir: str, profile: str, label: Optional[str],
         "benchmarks": results,
         "skipped": skipped,
     }
-    if clean:
-        rmtree(workdir)
+    from . import scoring
+    doc["fingerprint"] = scoring.fingerprint(doc)
     return doc

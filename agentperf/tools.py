@@ -89,11 +89,25 @@ def pinned_node_path() -> str:
     return os.path.join(tools_dir(), "node-v" + NODE_VERSION, exe)
 
 
+def _cached_ok(target: str) -> bool:
+    """A cached tool must actually run; a partial file from an interrupted
+    extraction is not a tool."""
+    if not os.path.exists(target):
+        return False
+    return bool(run_text([target, "--version"], timeout=15))
+
+
 def _fetch_binary(target: str, assets: Dict[str, tuple], url_fmt: str, version: str,
                   log=print) -> Optional[str]:
     """Download one release archive, verify SHA-256, and extract a single executable."""
     if os.path.exists(target):
-        return target
+        if _cached_ok(target):
+            return target
+        log("  cached {} does not run; fetching it again".format(os.path.basename(target)))
+        try:
+            os.remove(target)
+        except OSError:
+            pass
     key = _platform_key()
     if key not in assets:
         log("  no pinned build of {} for this platform ({})".format(os.path.basename(target), key))
@@ -113,26 +127,44 @@ def _fetch_binary(target: str, assets: Dict[str, tuple], url_fmt: str, version: 
     os.makedirs(os.path.dirname(target), exist_ok=True)
     exe_name = os.path.basename(target)
     wanted = ("/" + exe_name, "/bin/" + exe_name)
-    if asset.endswith(".zip"):
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            names = [n for n in zf.namelist() if n.endswith(wanted)]
-            if not names:
-                log("  {} does not contain {}; refusing to use it".format(asset, exe_name))
-                return None
-            member = min(names, key=len)
-            with zf.open(member) as src, open(target, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-    else:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-            members = [m for m in tf.getmembers() if m.name.endswith(wanted) and m.isfile()]
-            if not members:
-                log("  {} does not contain {}; refusing to use it".format(asset, exe_name))
-                return None
-            member = min(members, key=lambda m: len(m.name))
-            src = tf.extractfile(member)
-            with open(target, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-    os.chmod(target, os.stat(target).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    # Extract to a temporary file and rename only when complete, so an
+    # interruption can never leave a partial tool at the final path.
+    part = "{}.part-{}".format(target, os.getpid())
+    try:
+        if asset.endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                names = [n for n in zf.namelist() if n.endswith(wanted)]
+                if not names:
+                    log("  {} does not contain {}; refusing to use it".format(asset, exe_name))
+                    return None
+                member = min(names, key=len)
+                with zf.open(member) as src, open(part, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        else:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+                members = [m for m in tf.getmembers() if m.name.endswith(wanted) and m.isfile()]
+                if not members:
+                    log("  {} does not contain {}; refusing to use it".format(asset, exe_name))
+                    return None
+                member = min(members, key=lambda m: len(m.name))
+                src = tf.extractfile(member)
+                with open(part, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        os.chmod(part, os.stat(part).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        os.replace(part, target)
+    except BaseException:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
+    if not _cached_ok(target):
+        log("  fetched {} does not run; refusing to use it".format(exe_name))
+        try:
+            os.remove(target)
+        except OSError:
+            pass
+        return None
     return target
 
 
@@ -160,9 +192,9 @@ def find_tools() -> Dict[str, Optional[str]]:
     found: Dict[str, Optional[str]] = {}
     found["git"] = which("git")
     pinned = pinned_rg_path()
-    found["rg"] = pinned if os.path.exists(pinned) else which("rg")
+    found["rg"] = pinned if _cached_ok(pinned) else which("rg")
     pinned_node = pinned_node_path()
-    found["node"] = _system_node() or (pinned_node if os.path.exists(pinned_node) else None)
+    found["node"] = _system_node() or (pinned_node if _cached_ok(pinned_node) else None)
     found["tar"] = which("tar")
     found["claude"] = which("claude")
     found["codex"] = which("codex")
@@ -176,10 +208,15 @@ def find_tools() -> Dict[str, Optional[str]]:
         found["powershell"] = which("powershell")
         found["pwsh"] = which("pwsh")
     else:
-        found["shell"] = "/bin/sh" if os.path.exists("/bin/sh") else which("sh")
+        # The scored shell is bash on every OS (see benches/process.py):
+        # /bin/sh is dash on Ubuntu and bash 3.2 on macOS, which would score
+        # different shells against each other. Fall back to sh only where
+        # no bash exists, and let the benchmark record that fact.
+        bash = which("bash") or ("/bin/bash" if os.path.exists("/bin/bash") else None)
+        found["bash"] = bash
+        found["shell"] = bash or ("/bin/sh" if os.path.exists("/bin/sh") else which("sh"))
         found["grep"] = which("grep")
         found["exec"] = which("true")
-        found["bash"] = which("bash")
     return found
 
 
@@ -188,7 +225,7 @@ def tool_versions(found: Dict[str, Optional[str]]) -> Dict[str, str]:
     probes = {
         "git": ["--version"], "rg": ["--version"], "node": ["--version"], "tar": ["--version"],
         "grep": ["--version"], "claude": ["--version"], "codex": ["--version"],
-        "shell": ["--version"] if IS_WINDOWS else None,
+        "shell": ["--version"], "bash": ["--version"],
     }
     for name, args in probes.items():
         path = found.get(name)

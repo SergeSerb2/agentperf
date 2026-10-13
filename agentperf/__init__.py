@@ -8,7 +8,7 @@ Standard library only. Supports Python 3.8 through 3.14 on macOS, Linux
 # (tests, weights, corpus). PACKAGE_VERSION identifies the installed
 # program. They are bumped together at release time, but reports label
 # them separately so an old result never looks like the running program.
-SUITE_VERSION = "0.2.2"
+SUITE_VERSION = "0.3.0"
 SCHEMA_VERSION = 1
 
 

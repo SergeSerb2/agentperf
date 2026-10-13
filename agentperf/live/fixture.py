@@ -173,15 +173,39 @@ def build_fixture(dest, seed_bug=False):
     _write(os.path.join(dest, "README.md"),
            "# calcbox\n\nFixture package for agentperf live. Run tests with `python -m unittest`.\n")
 
+    # Fixture git runs through the same isolation as the git benchmarks:
+    # empty global config, no signing, no hooks or templates, bounded time.
+    # A user's commit.gpgsign or a stalling git shim must not hang setup.
+    guard = os.path.join(os.path.dirname(dest), ".agentperf-git-guard")
+    os.makedirs(os.path.join(guard, "hooks"), exist_ok=True)
+    os.makedirs(os.path.join(guard, "templates"), exist_ok=True)
+    empty_config = os.path.join(guard, "empty.gitconfig")
+    if not os.path.exists(empty_config):
+        open(empty_config, "w").close()
+    env = dict(os.environ)
+    env.update({"GIT_CONFIG_GLOBAL": empty_config, "GIT_TERMINAL_PROMPT": "0",
+                "LC_ALL": "C"})
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
+    flags = ["-c", "user.name=agentperf", "-c", "user.email=agentperf@localhost",
+             "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",
+             "-c", "core.hooksPath=" + os.path.join(guard, "hooks"),
+             "-c", "init.templateDir=" + os.path.join(guard, "templates"),
+             "-c", "init.defaultBranch=main", "-c", "gc.auto=0"]
+    probe = subprocess.run(["git", "--version"], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, encoding="utf-8",
+                           errors="replace", timeout=15, env=env)
+    if probe.returncode != 0 or not (probe.stdout or "").strip():
+        raise RuntimeError("git did not answer --version; cannot build the live fixture")
+
     def git(*args):
-        subprocess.run(["git", "-C", dest] + list(args), check=True,
+        subprocess.run(["git", "-C", dest] + flags + list(args), check=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       encoding="utf-8", errors="replace")
+                       encoding="utf-8", errors="replace", timeout=120, env=env)
 
     git("init", "-q")
     git("add", "-A")
-    git("-c", "user.name=agentperf", "-c", "user.email=agentperf@localhost",
-        "commit", "-q", "-m", "initial commit")
+    git("commit", "-q", "-m", "initial commit")
     return dest
 
 
