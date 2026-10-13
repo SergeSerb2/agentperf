@@ -134,10 +134,10 @@ class PackagingTest(unittest.TestCase):
             b = _doc("m", {"network.dns": _entry("network", 3.0)})
             pa, pb, out = (os.path.join(tmp, n) for n in ("a.json", "b.json", "out.json"))
             for path, doc in ((pa, a), (pb, b)):
-                with open(path, "w") as fh:
+                with open(path, "w", encoding="utf-8") as fh:
                     json.dump(doc, fh)
             self.assertEqual(main(["merge", pa, pb, "--out", out]), 0)
-            with open(out) as fh:
+            with open(out, encoding="utf-8") as fh:
                 merged = json.load(fh)
             self.assertEqual(sorted(merged["benchmarks"]), ["network.dns", "process.shell"])
             self.assertEqual(merged["skipped"], {})

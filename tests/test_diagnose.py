@@ -108,13 +108,14 @@ class CliSmokeTest(unittest.TestCase):
             doc = _doc("mine", {k: v for k, v in REF["benchmarks"].items()}, {"hostname": "h"})
             doc.update({"suite_version": "0.2.0", "schema": 1, "profile": "quick",
                         "corpus": {"fixture_hash": "x"}, "system": dict(REF["system"], hostname="h")})
-            with open(src, "w") as fh:
+            with open(src, "w", encoding="utf-8") as fh:
                 json.dump(doc, fh)
             out = os.path.join(tmp, "share.json")
             self.assertEqual(main(["share", src, "--out", out]), 0)
             html_path = os.path.join(tmp, "r.html")
             self.assertEqual(main(["report", src, "--html", html_path]), 0)
-            self.assertIn("Biggest wins", open(html_path).read())
+            with open(html_path, encoding="utf-8") as fh:
+                self.assertIn("Biggest wins", fh.read())
         finally:
             shutil.rmtree(tmp)
 
