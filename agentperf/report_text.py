@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from . import scoring
+from . import PACKAGE_VERSION, scoring
 from .advice import advise
 from .registry import CATEGORY_TITLES, CATEGORY_WEIGHTS
 from .util import fmt_gain, fmt_num
@@ -23,7 +23,8 @@ def _system_line(result) -> str:
 
 def run_report(result, reference: Optional[Dict[str, object]] = None) -> str:
     lines: List[str] = []
-    lines.append("agentperf {} - {} ({})".format(result["suite_version"], result["label"], result["profile"]))
+    lines.append("agentperf {} - {} ({}, result suite {})".format(
+        PACKAGE_VERSION, result["label"], result["profile"], result.get("suite_version", "?")))
     lines.append(_system_line(result))
     lines.append("")
     sc = scoring.score(result, reference) if reference else None
@@ -51,8 +52,10 @@ def run_report(result, reference: Optional[Dict[str, object]] = None) -> str:
     lw = scoring.lw100(result)
     if sc:
         ci = sc.get("agentmark_ci") or [None, None]
-        lines.append("AgentMark {}  (90% CI {}-{}, coverage {:.0%})  vs reference '{}'".format(
+        lines.append("AgentMark {}  (90% within-run interval {}-{}, coverage {:.0%})  vs reference '{}'".format(
             fmt_num(sc["agentmark"]), fmt_num(ci[0]), fmt_num(ci[1]), sc["coverage"], reference["label"]))
+        for warning in scoring.compatibility_warnings(result, reference):
+            lines.append("Comparability: " + warning)
         if sc.get("reach"):
             lines.append("Reach     {}  (network to model APIs and CDNs)".format(fmt_num(sc["reach"])))
         ref_lw = scoring.lw100(reference)
@@ -100,15 +103,22 @@ def why_summary(result, reference) -> str:
     return "\n".join(lines)
 
 
-def compare_report(results: List[Dict[str, object]], reference: Dict[str, object]) -> str:
+def compare_report(results: List[Dict[str, object]], reference: Dict[str, object],
+                   category_weights=None) -> str:
     common = scoring.common_benchmarks(results + [reference])
     labels = [r["label"] for r in results]
     width = max(10, max(len(l) for l in labels) + 1)
     head = "{:<34}".format("") + "".join("{:>{}}".format(l[:width - 1], width) for l in labels)
-    lines = ["Reference: {}  (score 1000 = reference speed; higher is better)".format(reference["label"]),
-             "", head]
-    full = [scoring.score(r, reference) for r in results]
-    same = [scoring.score(r, reference, restrict=common) for r in results]
+    lines = ["Reference: {}  (score 1000 = reference speed; higher is better)".format(reference["label"])]
+    if category_weights is not None:
+        lines.append("Category weights: equal (sensitivity check; the default weights differ)")
+    for r in results:
+        for warning in scoring.compatibility_warnings(r, reference):
+            lines.append("Comparability ({}): {}".format(r["label"], warning))
+    lines += ["", head]
+    full = [scoring.score(r, reference, category_weights=category_weights) for r in results]
+    same = [scoring.score(r, reference, restrict=common, category_weights=category_weights)
+            for r in results]
 
     def row(name, values):
         lines.append("{:<34}".format(name) + "".join("{:>{}}".format(v, width) for v in values))

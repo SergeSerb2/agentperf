@@ -8,7 +8,7 @@ import json
 import math
 from typing import Dict, List, Optional
 
-from . import SUITE_VERSION, scoring
+from . import PACKAGE_VERSION, SUITE_VERSION, scoring
 from .advice import advise
 from .registry import CATEGORY_TITLES, CATEGORY_WEIGHTS
 from .util import fmt_gain, fmt_num
@@ -27,17 +27,19 @@ def esc(text) -> str:
 # ---------------------------------------------------------------- data model
 
 class Machine:
-    def __init__(self, doc, reference, common, estimated=False, low=None, high=None):
+    def __init__(self, doc, reference, common, estimated=False, low=None, high=None,
+                 category_weights=None):
         self.doc = doc
         self.label = doc["label"]
         self.estimated = estimated
-        self.score = scoring.score(doc, reference)
-        self.common = scoring.score(doc, reference, restrict=common)
+        self.score = scoring.score(doc, reference, category_weights=category_weights)
+        self.common = scoring.score(doc, reference, restrict=common,
+                                    category_weights=category_weights)
         self.lw = scoring.lw100(doc, common)
         self.range = None
         if estimated and low and high:
-            lo = scoring.score(low, reference)["agentmark"]
-            hi = scoring.score(high, reference)["agentmark"]
+            lo = scoring.score(low, reference, category_weights=category_weights)["agentmark"]
+            hi = scoring.score(high, reference, category_weights=category_weights)["agentmark"]
             self.range = (min(lo, hi), max(lo, hi))
         elif self.score.get("agentmark_ci"):
             self.range = tuple(self.score["agentmark_ci"])
@@ -328,18 +330,19 @@ def _live_section(paths) -> str:
 # ---------------------------------------------------------------- page
 
 def write_html(results, reference, path: str, estimates: Optional[str] = None, title: Optional[str] = None,
-               live=None) -> None:
+               live=None, category_weights=None) -> None:
     common = scoring.common_benchmarks(results + [reference])
-    machines = [Machine(r, reference, common) for r in results]
+    machines = [Machine(r, reference, common, category_weights=category_weights) for r in results]
     for docs in _estimate_docs(estimates, reference):
-        machines.append(Machine(docs["mid"], reference, common, True, docs["pessimistic"], docs["optimistic"]))
+        machines.append(Machine(docs["mid"], reference, common, True, docs["pessimistic"],
+                                docs["optimistic"], category_weights=category_weights))
     machines.sort(key=lambda m: -(m.score["agentmark"] or 0))
 
     tiles = []
     for m in machines:
         rng = m.range
         rng_txt = "{}–{}".format(fmt_num(rng[0]), fmt_num(rng[1])) if rng else ""
-        kind = "modelled range" if m.estimated else "90% interval"
+        kind = "modelled range" if m.estimated else "90% within-run interval"
         tiles.append('<div class="tile{}"><div class="tile-label">{}{}</div><div class="tile-value">{}</div>'
                      '<div class="muted small">{} {}</div><div class="muted small">LW100 {:.1f} s · Reach {}</div></div>'.format(
                          " est" if m.estimated else "", esc(m.label),
@@ -369,13 +372,14 @@ def write_html(results, reference, path: str, estimates: Optional[str] = None, t
                                          for m in machines]}, indent=1)
     page = _TEMPLATE.format(
         title=esc(title or "agentperf: how well each machine serves coding agents"),
-        version=esc(SUITE_VERSION), ref=esc(reference["label"]),
+        version=esc(PACKAGE_VERSION), ref=esc(reference["label"]),
         date=esc(datetime.date.today().isoformat()), tiles="".join(tiles), am_chart=am_chart,
         heat=_heatmap(machines), lw=_stacked_lw(machines), transfer="".join(transfer_blocks),
         findings=_findings(machines), raw=_raw_table(machines, reference), live=_live_section(live),
         series_light="".join("--series-{}:{};".format(i + 1, c) for i, c in enumerate(SERIES)),
         series_dark="".join("--series-{}:{};".format(i + 1, c) for i, c in enumerate(SERIES_DARK)),
-        data=data_json.replace("</", "<\\/"))
+        data=(data_json.replace("&", "\\u0026").replace("<", "\\u003c")
+              .replace(">", "\\u003e")))
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(page)
 
@@ -658,7 +662,7 @@ def write_report(result, reference, path: str, references=None, title=None) -> N
     ci = sc.get("agentmark_ci") or [None, None]
     tiles = (
         '<div class="tile"><div class="tile-label">AgentMark</div><div class="tile-value">{}</div>'
-        '<div class="muted small">90% interval {}-{}</div></div>'
+        '<div class="muted small">90% within-run interval {}-{}</div></div>'
         '<div class="tile"><div class="tile-label">LW100 (local wait / 100 calls)</div>'
         '<div class="tile-value">{:.1f} s</div><div class="muted small">reference {:.1f} s</div></div>'
         '<div class="tile"><div class="tile-label">Reach (network)</div><div class="tile-value">{}</div>'
@@ -683,6 +687,7 @@ def write_report(result, reference, path: str, references=None, title=None) -> N
 Causes are labelled <b>observed</b> (a probe shows it), <b>likely</b> (probe plus matching pattern),
 or <b>possible</b> (pattern only). Gains are upper bounds and overlap.
 <span class="muted">agentperf %%VERSION%% - %%DATE%% - %%COMPARABLE%%</span></p>
+%%COMPAT%%
 <div class="tiles">%%TILES%%</div>
 <h2>Where you stand</h2><section>%%PLACEMENT%%<p class="muted small">%%PLACENOTE%%</p></section>
 <h2>Biggest wins: likely causes and fixes</h2>%%WINS%%
@@ -701,9 +706,12 @@ suite version, corpus hash, and reference. Share an anonymized result with: agen
             .replace("%%CSS%%", _css())
             .replace("%%VERDICT%%", esc(diagnose.verdict(sc["agentmark"])))
             .replace("%%REF%%", esc(reference["label"]))
-            .replace("%%VERSION%%", esc(SUITE_VERSION))
+            .replace("%%VERSION%%", esc(PACKAGE_VERSION))
             .replace("%%DATE%%", esc(datetime.date.today().isoformat()))
             .replace("%%COMPARABLE%%", comparable)
+            .replace("%%COMPAT%%", "".join(
+                '<p class="lede"><b>Comparability:</b> {}</p>'.format(esc(w))
+                for w in scoring.compatibility_warnings(result, reference)))
             .replace("%%TILES%%", tiles)
             .replace("%%PLACEMENT%%", place_chart)
             .replace("%%PLACENOTE%%", esc(place["note"]) +

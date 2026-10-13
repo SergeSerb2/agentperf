@@ -166,6 +166,31 @@ class BundledReferencesTest(unittest.TestCase):
             self.assertNotIn("top_processes", doc["system"])
 
 
+class HtmlEscapeTest(unittest.TestCase):
+    def test_markup_in_labels_is_inert_in_both_reports(self):
+        from agentperf.report_html import write_html, write_report
+        payload = '<img src=x onerror=alert(1)><script>alert(2)</script>'
+        ref = _doc("ref", REF["benchmarks"], dict(REF["system"]))
+        ref.update({"suite_version": "0.2.0", "schema": 1, "profile": "quick",
+                    "corpus": {"fixture_hash": "x"}})
+        evil = json.loads(json.dumps(ref))
+        evil["label"] = payload
+        evil["system"]["cpu_model"] = payload
+        tmp = tempfile.mkdtemp()
+        try:
+            for name, write in (("single", lambda p: write_report(evil, ref, p)),
+                                ("compare", lambda p: write_html([evil], ref, p))):
+                path = os.path.join(tmp, name + ".html")
+                write(path)
+                with open(path, encoding="utf-8") as fh:
+                    page = fh.read()
+                self.assertNotIn("<img src=x", page, name)
+                self.assertNotIn("<script>alert(2)", page, name)
+                self.assertIn("&lt;img", page, name)
+        finally:
+            shutil.rmtree(tmp)
+
+
 class CliSmokeTest(unittest.TestCase):
     def test_share_and_report_commands(self):
         from agentperf.cli import main

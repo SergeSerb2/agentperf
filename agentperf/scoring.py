@@ -59,7 +59,14 @@ def _scorable(result, reference, restrict: Optional[Set[str]] = None) -> Dict[st
     return out
 
 
-def _aggregate(ratios: Dict[str, float], result, cats: Dict[str, str]) -> Dict[str, object]:
+def equal_category_weights() -> Dict[str, float]:
+    """Every category weighted the same (for sensitivity checks, never the default)."""
+    return {c: 1.0 for c in CATEGORY_WEIGHTS}
+
+
+def _aggregate(ratios: Dict[str, float], result, cats: Dict[str, str],
+               category_weights=None) -> Dict[str, object]:
+    weights = category_weights or CATEGORY_WEIGHTS
     by_cat: Dict[str, List[str]] = {}
     for bid, cat in cats.items():
         by_cat.setdefault(cat, []).append(bid)
@@ -67,18 +74,18 @@ def _aggregate(ratios: Dict[str, float], result, cats: Dict[str, str]) -> Dict[s
     for cat, ids in by_cat.items():
         cat_ratio[cat] = geomean([ratios[i] for i in ids],
                                  [float(result["benchmarks"][i]["weight"]) for i in ids])
-    local = [c for c in cat_ratio if c in CATEGORY_WEIGHTS]
+    local = [c for c in cat_ratio if c in weights]
     agentmark = 1000 * geomean([cat_ratio[c] for c in local],
-                               [CATEGORY_WEIGHTS[c] for c in local]) if local else None
+                               [weights[c] for c in local]) if local else None
     reach = 1000 * cat_ratio["network"] if "network" in cat_ratio else None
     return {"agentmark": agentmark, "reach": reach,
             "categories": {c: 1000 * r for c, r in cat_ratio.items()}}
 
 
-def coverage(result, reference, cats: Dict[str, str]) -> float:
+def coverage(result, reference, cats: Dict[str, str], category_weights=None) -> float:
     """Share of the reference's headline weight that this result also scores."""
     total = got = 0.0
-    for cat, cw in CATEGORY_WEIGHTS.items():
+    for cat, cw in (category_weights or CATEGORY_WEIGHTS).items():
         ref_ids = [b for b, e in reference["benchmarks"].items() if e.get("scored") and e["category"] == cat]
         ref_w = sum(float(reference["benchmarks"][b]["weight"]) for b in ref_ids)
         if not ref_w:
@@ -89,13 +96,50 @@ def coverage(result, reference, cats: Dict[str, str]) -> float:
     return got / total if total else 0.0
 
 
+def _definition(entry):
+    return (entry.get("category"), round(float(entry.get("weight") or 0), 6),
+            bool(entry.get("scored")), entry.get("unit"),
+            bool(entry.get("lower_is_better")), entry.get("ops"))
+
+
+def compatibility_warnings(result, reference) -> List[str]:
+    """Reasons these two documents may not be strictly comparable.
+
+    Comparability rests on what was actually measured: the corpus fixture
+    hash and the scored benchmark definitions recorded in each file. Suite
+    version strings are printed in reports but are not the key: the bundled
+    0.1.0 profiles carry definitions identical to the 0.2.x suite.
+    """
+    warnings: List[str] = []
+    mine = (result.get("corpus") or {}).get("fixture_hash")
+    theirs = (reference.get("corpus") or {}).get("fixture_hash")
+    if mine and theirs and mine != theirs:
+        warnings.append("corpus fixture hashes differ ({} vs {}): the test inputs "
+                        "were not identical, so scores are not comparable.".format(mine, theirs))
+    if result.get("schema") != reference.get("schema"):
+        warnings.append("result schema versions differ ({} vs {}); unknown fields "
+                        "may be read differently.".format(result.get("schema"), reference.get("schema")))
+    differ = []
+    for bid, entry in (result.get("benchmarks") or {}).items():
+        ref_entry = (reference.get("benchmarks") or {}).get(bid)
+        if ref_entry and (entry.get("scored") or ref_entry.get("scored")) \
+                and _definition(entry) != _definition(ref_entry):
+            differ.append(bid)
+    if differ:
+        shown = ", ".join(sorted(differ)[:5]) + (" and {} more".format(len(differ) - 5)
+                                                 if len(differ) > 5 else "")
+        warnings.append("scored benchmark definitions differ for {}: scores are not "
+                        "strictly comparable.".format(shown))
+    return warnings
+
+
 def score(result, reference, restrict: Optional[Set[str]] = None, rounds: int = 300,
-          seed: int = 7) -> Dict[str, object]:
+          seed: int = 7, category_weights=None) -> Dict[str, object]:
     cats = _scorable(result, reference, restrict)
     ratios = {b: _ratio(result["benchmarks"][b], reference["benchmarks"][b]) for b in cats}
-    out = _aggregate(ratios, result, cats)
+    out = _aggregate(ratios, result, cats, category_weights)
     out["benchmarks"] = {b: 1000 * r for b, r in ratios.items()}
-    out["coverage"] = coverage(result, reference, cats)
+    out["coverage"] = coverage(result, reference, cats, category_weights)
     out["compared"] = sorted(cats)
     # Bootstrap: resample this machine's samples per benchmark; the reference stays fixed.
     rng = random.Random(seed)
@@ -103,7 +147,7 @@ def score(result, reference, restrict: Optional[Set[str]] = None, rounds: int = 
     marks, reaches = [], []
     for i in range(rounds):
         rr = {b: _ratio(result["benchmarks"][b], reference["benchmarks"][b], boot[b][i]) for b in cats}
-        agg = _aggregate(rr, result, cats)
+        agg = _aggregate(rr, result, cats, category_weights)
         if agg["agentmark"]:
             marks.append(agg["agentmark"])
         if agg["reach"]:

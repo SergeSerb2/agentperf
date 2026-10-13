@@ -11,7 +11,7 @@ import traceback
 import uuid
 from typing import Callable, Dict, List, Optional
 
-from . import SCHEMA_VERSION, SUITE_VERSION, benches  # noqa: F401  (registers benchmarks)
+from . import PACKAGE_VERSION, SCHEMA_VERSION, SUITE_VERSION, benches  # noqa: F401  (registers benchmarks)
 from . import env, tools
 from .corpus import Corpus
 from .registry import REGISTRY, Context, Skip
@@ -122,6 +122,7 @@ def run_suite(workdir: str, profile: str = "standard", label: Optional[str] = No
         "schema": SCHEMA_VERSION,
         "kind": "system",
         "suite_version": SUITE_VERSION,
+        "package_version": PACKAGE_VERSION,
         "label": label or system.get("hostname"),
         "run_id": uuid.uuid4().hex[:12],
         "started_at": started.isoformat(timespec="seconds"),

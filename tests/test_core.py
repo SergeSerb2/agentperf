@@ -101,6 +101,33 @@ class ScoringTest(unittest.TestCase):
         self.assertLessEqual(lo, sc["agentmark"])
         self.assertGreaterEqual(hi, sc["agentmark"])
 
+    def test_compatibility_warnings(self):
+        ref = _doc("ref", {"process.shell": _entry("process", 10.0)})
+        ref["corpus"] = {"fixture_hash": "aaa"}
+        ref["schema"] = 1
+        same = json.loads(json.dumps(ref))
+        self.assertEqual(scoring.compatibility_warnings(same, ref), [])
+        other_corpus = json.loads(json.dumps(ref))
+        other_corpus["corpus"] = {"fixture_hash": "bbb"}
+        self.assertTrue(any("corpus" in w for w in scoring.compatibility_warnings(other_corpus, ref)))
+        heavier = json.loads(json.dumps(ref))
+        heavier["benchmarks"]["process.shell"]["weight"] = 9.0
+        self.assertTrue(any("definitions differ" in w
+                            for w in scoring.compatibility_warnings(heavier, ref)))
+
+    def test_equal_weights_change_only_the_weights(self):
+        mixed = _doc("mixed", {
+            "process.shell": _entry("process", 5.0),
+            "files.read": _entry("files", 100.0, ops=2000),
+            "transfer.read": _entry("transfer", 250.0, lower=False),
+        })
+        default = scoring.score(mixed, self.ref)["agentmark"]
+        equal = scoring.score(mixed, self.ref,
+                              category_weights=scoring.equal_category_weights())["agentmark"]
+        # ratios 2, 1, 0.25: equal-weight geomean is (2*1*0.25)^(1/3)
+        self.assertAlmostEqual(equal, 1000 * 0.5 ** (1.0 / 3.0))
+        self.assertNotAlmostEqual(default, equal)
+
     def test_lw100_uses_per_op_cost(self):
         lw = scoring.lw100(self.ref)
         shell = next(l for l in lw["lines"] if l["label"].startswith("Shell start"))

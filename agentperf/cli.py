@@ -9,7 +9,7 @@ import os
 import sys
 from typing import List, Optional
 
-from . import SUITE_VERSION, scoring
+from . import PACKAGE_VERSION, SUITE_VERSION, scoring
 
 REF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "references")
 
@@ -203,10 +203,12 @@ def cmd_compare(args) -> int:
     if reference is None:
         reference = results[0]
         print("No reference given; using {} as the reference.\n".format(reference["label"]))
-    print(compare_report(results, reference))
+    weights = scoring.equal_category_weights() if getattr(args, "weights", "default") == "equal" else None
+    print(compare_report(results, reference, category_weights=weights))
     if args.html:
         from .report_html import write_html
-        write_html(results, reference, args.html, estimates=args.estimates, live=args.live)
+        write_html(results, reference, args.html, estimates=args.estimates, live=args.live,
+                   category_weights=weights)
         print("\nWrote {}".format(os.path.abspath(args.html)))
     return 0
 
@@ -288,7 +290,8 @@ def cmd_remote(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agentperf",
                                 description="Measure how well this computer serves AI coding agents.")
-    p.add_argument("--version", action="version", version="agentperf " + SUITE_VERSION)
+    p.add_argument("--version", action="version",
+                   version="agentperf {} (suite {})".format(PACKAGE_VERSION, SUITE_VERSION))
     sub = p.add_subparsers(dest="command")
 
     r = sub.add_parser("run", help="run the system suite on this machine")
@@ -313,6 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("results", nargs="+")
     c.add_argument("--ref", help="reference name or result JSON (default: bundled default)")
     c.add_argument("--html", help="also write a self-contained HTML report")
+    c.add_argument("--weights", choices=["default", "equal"], default="default",
+                   help="category weights: default, or equal for a sensitivity check")
     c.add_argument("--estimates", help="JSON file of modelled (not measured) systems for the HTML report")
     c.add_argument("--live", nargs="*", default=[], help="live-run JSON files to add to the HTML report")
     c.set_defaults(func=cmd_compare)
