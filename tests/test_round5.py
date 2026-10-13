@@ -27,7 +27,8 @@ def _quiet_main(argv):
 def _tmp_home(test):
     tmp = tempfile.mkdtemp()
     test.addCleanup(shutil.rmtree, tmp, True)
-    patcher = mock.patch.dict(os.environ, {"HOME": tmp})
+    # expanduser("~") reads HOME on POSIX but USERPROFILE on Windows.
+    patcher = mock.patch.dict(os.environ, {"HOME": tmp, "USERPROFILE": tmp})
     patcher.start()
     test.addCleanup(patcher.stop)
     return tmp
