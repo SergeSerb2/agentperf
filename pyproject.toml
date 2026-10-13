@@ -21,6 +21,12 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Testing",
   "Topic :: System :: Benchmark",
 ]
@@ -33,6 +39,7 @@ agentperf = "agentperf.cli:main"
 Homepage = "https://github.com/SergeSerb2/agentperf"
 Repository = "https://github.com/SergeSerb2/agentperf"
 Issues = "https://github.com/SergeSerb2/agentperf/issues"
+Changelog = "https://github.com/SergeSerb2/agentperf/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["agentperf*"]

@@ -1,0 +1,46 @@
+name: Bug report
+description: Something crashed, hung, or gave a wrong-looking result
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Two files make bugs much easier to reproduce:
+        the output of `agentperf doctor` and an anonymized result from
+        `agentperf share result.json`. Never attach a raw result file: it
+        contains your hostname, paths, and process names.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: The command you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: agentperf doctor output
+      description: Paste the full output of `agentperf doctor`. It is safe to post (home paths are shown as ~), but give it a quick read first.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: share
+    attributes:
+      label: Anonymized result (agentperf share)
+      description: Attach the `-share.json` file produced by `agentperf share result.json`, or write "not applicable" if the run never produced a result.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: agentperf version
+      description: Output of `agentperf --version`
+      placeholder: agentperf 0.2.2 (suite 0.2.2)
+    validations:
+      required: true
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else?
+      description: OS details, antivirus/EDR, WSL setup, timing of day, background load - anything unusual about the machine or the moment.

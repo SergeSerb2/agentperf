@@ -1,0 +1,48 @@
+name: Contribute a reference profile
+description: Share an anonymized result so the bundled reference set grows
+title: "Reference profile: "
+labels: [reference-profile]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Good profiles come from an idle, plugged-in machine:
+
+        ```sh
+        agentperf run --runs 3 --fetch-tools --clean
+        agentperf share <result>.json
+        ```
+
+        Attach the `-share.json` file below. Never attach a raw result: it
+        contains your hostname, paths, and process names. A maintainer checks
+        the file for private fields before anything is bundled.
+  - type: textarea
+    id: machine
+    attributes:
+      label: The machine
+      description: CPU, OS (and WSL2 if relevant), disk type, laptop or desktop. Say it here, not in the file.
+    validations:
+      required: true
+  - type: textarea
+    id: conditions
+    attributes:
+      label: Measurement conditions
+      description: Anything that shapes the score - antivirus or EDR, indexing, power plan, background load, battery vs plugged in. Honest bad conditions are more useful than silent good ones.
+    validations:
+      required: true
+  - type: textarea
+    id: share-file
+    attributes:
+      label: Anonymized result file
+      description: Drag the `-share.json` file here. Confirm it came from `agentperf share`, not from a raw result.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The attached file was produced by `agentperf share` and I read it before posting
+          required: true
+        - label: The machine was idle and plugged in during the run (or I said otherwise above)
+          required: true

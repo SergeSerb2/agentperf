@@ -14,6 +14,8 @@ jobs:
             python: "3.8"
           - os: ubuntu-22.04
             python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
           # GitHub retired the Intel macOS runners, and Python 3.8 has no arm64
           # build, so macOS covers 3.10; 3.8 stays covered on Linux and Windows.
           - os: macos-latest
@@ -45,3 +47,5 @@ jobs:
           python scripts/build_pyz.py agentperf.pyz
           python agentperf.pyz --version
           python agentperf.pyz references
+          python agentperf.pyz run --quick --no-network --clean --only process.shell,files.read,compute.sha256 --label pyz-smoke --out pyz-result.json
+          python agentperf.pyz report pyz-result.json --html pyz-report.html
