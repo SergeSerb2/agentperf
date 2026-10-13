@@ -1,71 +1,164 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
+<p align="center">
+  <img src="assets/icon.svg" width="72" height="72" alt="">
+</p>
 
-# agentperf
+<h1 align="center">agentperf</h1>
 
-**How well does your computer serve AI coding agents — and why?**
+<p align="center">
+  <b>How fast is your computer for AI coding agents?</b><br>
+  agentperf benchmarks the local work behind every tool call,<br>
+  then tells you what is slowing it down.
+</p>
 
-The model runs in the cloud, but every tool call runs on your machine: shell
-starts, file reads and edits, grep and ripgrep, git, tests, builds, file
-transfer. agentperf times that work with fixed inputs, scores it against a
-reference machine, and explains the score: which tests cost you points, what
-is likely causing it, and what to fix first.
+<p align="center">
+  <a href="https://github.com/SergeSerb2/agentperf/actions/workflows/ci.yml"><img src="https://github.com/SergeSerb2/agentperf/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/SergeSerb2/agentperf/releases/latest"><img src="https://img.shields.io/github/v/release/SergeSerb2/agentperf?color=ea580c" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/python-3.8%2B-3776ab" alt="Python 3.8+">
+  <img src="https://img.shields.io/badge/dependencies-none-2ea44f" alt="No dependencies">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+</p>
 
-![An agentperf report: AgentMark 67 for native Windows, with ranked causes and fixes](assets/report.png)
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-you-get">What you get</a> ·
+  <a href="#reading-your-score">Reading your score</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#how-it-works">How it works</a>
+</p>
 
-- **AgentMark** — the local-work score. 1000 = the reference (a desktop
-  i7-12700K in WSL2); 2000 = twice as fast. The same PC scores **67** on
-  native Windows with real-time antivirus — the report says why.
-- **Reach** — the network score (model APIs, CDNs), kept separate because it
-  measures a place and an ISP, not a machine.
-- **LW100** — modelled seconds of local wait per 100 agent tool calls, from a
-  real 6,416-call tool mix.
-- **Biggest wins** — ranked causes with cited evidence (observed / likely /
-  possible), concrete fixes, and upper-bound score gains.
+<br>
 
-Python 3.8+, standard library only. macOS, Linux, WSL2, and Windows.
+When Claude Code or Codex works on your code, the model does its thinking in
+the cloud. Everything else happens on your computer. Each tool call starts a
+shell, reads or edits files, searches with ripgrep, runs git, and pipes the
+output back. One task can make hundreds of these calls, so a few milliseconds
+per call add up quickly.
 
-## Install and run
+agentperf times that local work. It runs the same fixed tests on every
+machine, compares your results with a reference machine, and explains your
+score: which tests cost you points, what is probably causing it, and what to
+fix first.
 
-Pick one. All three give the same `agentperf` command.
+It is one Python package with no dependencies. It runs on macOS, Linux, WSL2,
+and Windows with Python 3.8 or newer.
+
+## Quick start
 
 ```sh
-# 1) pipx (recommended) or pip
 pipx install git+https://github.com/SergeSerb2/agentperf.git
-
-# 2) single file, no install (download agentperf.pyz from the latest Release)
-python3 agentperf.pyz run --quick
-
-# 3) from a checkout
-python3 -m agentperf run --quick
+agentperf run --quick --html report.html
 ```
 
-On Windows, use `py` or `python` instead of `python3`. In WSL, run it inside
-the distro with repos on the Linux filesystem — never under `/mnt/c`.
+A quick run takes a few minutes. When it finishes, open `report.html` and
+read **Biggest wins** first.
+
+If you prefer not to install anything, download `agentperf.pyz` from the
+[latest release](https://github.com/SergeSerb2/agentperf/releases/latest) and
+run it with Python:
 
 ```sh
-agentperf doctor                                   # fast pre-flight, no benchmarks
-agentperf run --quick --no-network                 # smoke run
-agentperf run --fetch-tools --html report.html     # full run + explanatory report
-agentperf run --runs 3                             # steadier number (single runs vary ~10-15%)
+python3 agentperf.pyz run --quick --html report.html
 ```
 
-Then open the report and read **Biggest wins** first:
+On Windows, type `py` instead of `python3`. In WSL, run agentperf inside the
+Linux distro, from a folder on the Linux filesystem (not under `/mnt/c`).
 
-```sh
-agentperf report agentperf-<label>-<stamp>.json    # or point it at any result
-agentperf references                               # bundled machines you compare against
-agentperf compare results/*.json --html compare.html
-agentperf share <result>.json                      # anonymized copy, safe to post in an issue
+## What you get
+
+Every run gives you three numbers:
+
+| Number | What it tells you |
+|---|---|
+| **AgentMark** | Your score for local agent work. The reference machine scores 1000. A score of 2000 means twice as fast. |
+| **LW100** | Seconds an agent waits on your machine for every 100 tool calls. Lower is better. |
+| **Reach** | How quickly you reach the model APIs and package registries. It is scored separately, because it measures your network, not your computer. |
+
+After the numbers, agentperf explains the score. This is the end of a run on
+a busy laptop:
+
+```text
+AgentMark 430  (90% CI 426-432, coverage 100%)  vs reference 'WSL2 - i7-12700K (reference, 1000)'
+Reach     2,144  (network to model APIs and CDNs)
+LW100     2.6 s local wait per 100 tool calls (reference 0.6 s)
+
+Why this score
+  Slow host. Agents spend noticeable time waiting on local tools; see the biggest wins.
+  Biggest drag: process.parallel at x0.13 vs reference (worth up to +52 AgentMark).
+  Biggest wins (gains are upper bounds and overlap):
+  1. [possible] Process and file overhead (OS or security layer) (up to +323)
+     Fix: Check for antivirus/EDR exclusions for code folders.
+  2. [observed] Background load during the run (unscored win)
+     Fix: Quit or restart the busy processes (a daemon pinned near 100% for hours is a bug, not load).
 ```
 
-An example report is in the repo: [examples/example-report.html](examples/example-report.html)
-(open it in a browser).
+The HTML report goes further. It places you next to the bundled reference
+machines, shows the evidence behind each cause, and lists how many points
+each test costs you. Here is an
+[example report](https://htmlpreview.github.io/?https://github.com/SergeSerb2/agentperf/blob/main/examples/example-report.html)
+for a Windows PC with real-time antivirus.
 
-## Run on other machines over SSH
+## Reading your score
 
-agentperf copies itself as one `.pyz`, runs with the remote Python, and
-fetches the result. POSIX hosts, Windows PowerShell SSH hosts, and WSL
-distros through a Windows host all work.
+| AgentMark | What it means |
+|---|---|
+| 850 or more | A strong host. Tools come back almost at once. |
+| 550 to 850 | Good. A few fixes can still help. |
+| 300 to 550 | Agents often wait on local tools. |
+| Under 300 | Fix the top causes, or run your agents on a different machine. |
+
+Software around the hardware matters a lot. The reference is a desktop PC
+running Ubuntu in WSL2. The same PC, running natively on Windows with
+real-time antivirus and search indexing, scored less than a tenth of that.
+
+A few things to keep in mind:
+
+- Each cause is marked **observed** (a probe saw it), **likely** (a probe
+  plus a matching pattern), or **possible** (a pattern only).
+- Each fix shows the most it could add to your score. Fixes overlap, so the
+  gains do not add up.
+- Single runs vary by about 10 to 15%. Use `--runs 3` when you want a number
+  to compare.
+
+### What usually slows agents down
+
+agentperf looks for these causes. Each one has shown up on a real machine.
+
+- Antivirus and search indexing on Windows. Real-time scanning checks every
+  process start and every file write.
+- Code under `/mnt/c` in WSL. Creating 2,000 small files took 41.8 s there,
+  and 0.024 s on the Linux filesystem.
+- A slow shell profile. Codex starts a login shell for every command, so your
+  dotfiles run every time.
+- Background load. One stuck system process cut a laptop's score almost in
+  half.
+- Synced folders (iCloud, OneDrive, Dropbox), power-saving plans, and
+  spinning disks.
+- Large repos with git's fsmonitor turned off.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `agentperf run` | Runs the benchmark. Add `--quick` for a shorter run, `--runs 3` for a steadier number, and `--html report.html` for the report. |
+| `agentperf doctor` | Checks tools, disk, and settings. Runs no benchmarks. |
+| `agentperf report result.json` | Explains a saved result and writes its HTML report. |
+| `agentperf compare a.json b.json --html compare.html` | Puts results from several machines side by side. |
+| `agentperf references` | Lists the bundled reference machines. |
+| `agentperf share result.json` | Writes an anonymized copy that is safe to post. |
+| `agentperf remote <host>` | Runs the benchmark on another machine over SSH. |
+| `agentperf live` | Runs real Claude Code and Codex sessions. This costs tokens. |
+
+Add `--fetch-tools` when you compare machines. It downloads a pinned ripgrep
+build, so every machine searches with the same binary.
+
+<details>
+<summary><b>Running on other machines over SSH</b></summary>
+<br>
+
+agentperf copies itself to the other machine as one file, runs there with
+that machine's Python, and brings the result back. It works with Linux and
+macOS hosts, Windows hosts that use PowerShell over SSH, and WSL distros on a
+Windows host.
 
 ```sh
 agentperf remote my-mac --fetch-tools --clean
@@ -73,60 +166,78 @@ agentperf remote my-pc --fetch-tools
 agentperf remote my-pc --wsl Ubuntu --fetch-tools
 ```
 
-## What it measures
+Run `remote` from a pipx install or a checkout. It does not work from
+`agentperf.pyz` yet.
 
-Fixed tests in seven scored categories — process spawn (weight 25), small
-files (15), search (15), git (15), compute (15), file transfer (10), IPC (5) —
-plus network (Reach) and diagnostics (login shell, PowerShell, harness
-start-up, git fsmonitor) that feed the advice. Details, fairness rules
-(equal flush semantics, cache bypass, pinned ripgrep), statistics, and
-comparability rules: [docs/METHODOLOGY.md](docs/METHODOLOGY.md).
+</details>
 
-## Live agent runs (costs tokens)
+<details>
+<summary><b>Live agent runs</b></summary>
+<br>
+
+`agentperf live` gives real Claude Code and Codex sessions three fixed tasks
+in a generated repo: fix a bug, rename a function across several files, and
+add a small feature. For each run it reports whether the task passed, the
+wall time, the time spent in local tools, the time spent waiting on the
+model, and the tokens used.
 
 ```sh
-agentperf live --dry-run
-agentperf live --claude-model sonnet --codex-model gpt-5.6-sol
+agentperf live --dry-run                  # shows what would run and spends nothing
+agentperf live --claude-model sonnet
 ```
 
-Three fixed tasks in a generated repo, run by real Claude Code / Codex
-sessions. Each run reports success, wall time, local tool time, model time,
-tool calls, and tokens. See SECURITY.md before you run it.
+Live runs use your own accounts and cost tokens. Read
+[SECURITY.md](SECURITY.md) before you start one.
 
-## Reading your score
+</details>
 
-- **850+** strong host · **550-850** usable, fixes help · **300-550** agents
-  visibly wait on tools · **under 300** fix the top causes or move agent work.
-- Causes are labelled **observed** (a probe shows it), **likely** (probe plus
-  matching pattern), or **possible** (pattern only). Gains are upper bounds
-  and overlap; they do not add up.
-- Placement uses only the bundled profiles, so agentperf reports a rank, not
-  a percentile. Four machines cannot support a percentile.
-- Typical traps, all measured: antivirus/EDR and search indexing on Windows,
-  repos on `/mnt/c` from WSL (2,000 files: 41.8 s vs 0.024 s on ext4), synced
-  folders, slow shell dotfiles (paid per Codex command), background load,
-  power plans, spinning disks.
+## How it works
+
+agentperf builds the same test project on every machine: 6,000 source-like
+files in 400 folders, about 49 MB. Then it times seven kinds of work.
+
+| Category | Weight | What it times |
+|---|---:|---|
+| Process start | 25 | Shells, Python, Node, and 32 shells at once |
+| Small files | 15 | Creating, reading, editing, listing, and deleting thousands of files |
+| Search | 15 | ripgrep and grep across the project |
+| Git | 15 | Status, diff, commit, log, and worktrees on a 6,000-file repo |
+| Compute | 15 | Hashing, compression, JSON, Python, Node, and jobs on all cores |
+| File transfer | 10 | Large reads, writes, and copies, plus unpacking an archive |
+| IPC | 5 | Pipes and local network connections |
+
+The weights come from 6,416 real Claude Code tool calls. Most of them (79%)
+were shell commands, so process start counts the most.
+
+The tests are built to be fair across operating systems. Writes must reach
+the disk on every OS, cold reads skip the file cache, and every machine uses
+the same ripgrep build. [docs/METHODOLOGY.md](docs/METHODOLOGY.md) explains
+the rules, the statistics, and the scoring.
 
 ## Privacy
 
-A raw result contains your hostname, paths, and process names. Do not post
-it. `agentperf share` writes an anonymized copy and lists every change.
-See [SECURITY.md](SECURITY.md).
+A raw result file contains your hostname, file paths, and process names, so
+do not post it as is. `agentperf share` writes an anonymized copy and lists
+everything it changed. See [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
-Add a benchmark with one decorated factory, contribute an anonymized
-reference profile, or improve a diagnosis rule:
-[CONTRIBUTING.md](CONTRIBUTING.md). Tests:
-`python3 -m unittest discover -s tests -t .`
+Contributions are welcome. You can add a benchmark, improve a diagnosis rule,
+or send an anonymized result from your machine to grow the reference set.
+[CONTRIBUTING.md](CONTRIBUTING.md) explains how. To run the tests:
 
-License: MIT. Not affiliated with any other project of a similar name.
+```sh
+python3 -m unittest discover -s tests -t .
+```
 
 ## Roadmap
 
-- Publish to PyPI as `agentperf` (the name is free; needs a maintainer
-  PyPI account, so until then use the `git+https://` pipx install above).
-- More bundled reference profiles (especially Linux desktops and laptops
-  under no load), contributed with `agentperf share`.
-- Opt-in result history on one machine, so a tuning change shows its own
-  before/after instead of two loose JSON files.
+- Publish to PyPI, so that `pipx install agentperf` works.
+- More reference machines, especially Linux desktops and laptops.
+- A result history on each machine, so you can compare before and after a
+  change.
+
+## License
+
+MIT. agentperf is not affiliated with other projects that have a similar
+name.
