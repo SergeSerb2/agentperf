@@ -57,6 +57,14 @@ class CorpusTest(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+class RegistryTest(unittest.TestCase):
+    def test_node_spawn_is_an_unscored_diagnostic(self):
+        from agentperf import benches  # noqa: F401
+        from agentperf.registry import REGISTRY
+        bench = next(b for b in REGISTRY if b.id == "diag.node_spawn")
+        self.assertFalse(bench.scored)
+
+
 class RunnerLockTest(unittest.TestCase):
     def test_second_run_in_same_workdir_is_refused(self):
         from agentperf import runner

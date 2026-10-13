@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
 from ..registry import bench
-from ..util import IS_WINDOWS, now
+from ..util import IS_WINDOWS, now, run
 
 _NO_WINDOW = {"creationflags": 0x08000000} if IS_WINDOWS else {}
 
@@ -70,6 +71,39 @@ def parallel_spawn(ctx):
         for proc in procs:
             proc.wait()
         return (now() - t0) * 1000.0
+
+    return sample
+
+
+_NODE_SPAWN_SCRIPT = r"""
+const {spawnSync} = require('child_process');
+const shell = process.argv[1];
+const args = JSON.parse(process.argv[2]);
+const n = 30;
+const t0 = performance.now();
+for (let i = 0; i < n; i++) {
+  const r = spawnSync(shell, args, {stdio: 'ignore'});
+  if (r.error) { console.error(String(r.error)); process.exit(1); }
+}
+console.log(JSON.stringify({ms: (performance.now() - t0) / n}));
+"""
+
+
+@bench("diag.node_spawn", title="Shell spawn from Node (spawnSync)", unit="ms",
+       lower_is_better=True,
+       models="What a Node-based harness pays per shell start, without the Python "
+              "subprocess overhead included in process.shell",
+       requires=("node", "shell"), reps=5)
+def node_spawn_diag(ctx):
+    (node,) = ctx.need("node")
+    (shell,) = ctx.need("shell")
+    shell_args = ["--noprofile", "--norc", "-c", "true"] if IS_WINDOWS else ["-c", "true"]
+
+    def sample():
+        proc = run([node, "-e", _NODE_SPAWN_SCRIPT, shell, json.dumps(shell_args)], timeout=120)
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.decode("utf-8", "replace")[:200])
+        return float(json.loads(proc.stdout.decode().strip().splitlines()[-1])["ms"])
 
     return sample
 

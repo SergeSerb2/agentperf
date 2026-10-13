@@ -115,13 +115,20 @@ def _fetch_binary(target: str, assets: Dict[str, tuple], url_fmt: str, version: 
     wanted = ("/" + exe_name, "/bin/" + exe_name)
     if asset.endswith(".zip"):
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            member = min((n for n in zf.namelist() if n.endswith(wanted)), key=len)
+            names = [n for n in zf.namelist() if n.endswith(wanted)]
+            if not names:
+                log("  {} does not contain {}; refusing to use it".format(asset, exe_name))
+                return None
+            member = min(names, key=len)
             with zf.open(member) as src, open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
     else:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-            member = min((m for m in tf.getmembers() if m.name.endswith(wanted) and m.isfile()),
-                         key=lambda m: len(m.name))
+            members = [m for m in tf.getmembers() if m.name.endswith(wanted) and m.isfile()]
+            if not members:
+                log("  {} does not contain {}; refusing to use it".format(asset, exe_name))
+                return None
+            member = min(members, key=lambda m: len(m.name))
             src = tf.extractfile(member)
             with open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
