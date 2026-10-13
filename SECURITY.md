@@ -5,13 +5,20 @@
 - **Local files only (system suite).** It creates a work directory
   (`~/.agentperf/work`), generates a fixed 6,000-file corpus there, runs timed
   file, git, search, and process operations inside it, and writes one result
-  JSON. `--clean` deletes the work directory. It never modifies your repos.
+  JSON. A run deletes its own `corpus/`, `repo/`, and `scratch/` folders
+  inside the work directory, so the directory must be agentperf's own: it is
+  marked with a `.agentperf-owned` file, and a non-empty directory without
+  that marker is refused before anything is touched. `--clean` removes only
+  the entries agentperf owns, never anything else you put there. It never
+  modifies your repos.
 - **System probes are read-only.** CPU, OS, filesystem type, power state,
   running security agents (process names), the busiest processes, load
   average, and similar facts. Nothing needs administrator rights.
-- **Network tests (Reach)** contact public endpoints only (model API hosts
-  for DNS/TLS timing, a public speed-test endpoint, the npm registry). They
-  send **no credentials and no API keys**. Skip them with `--no-network`.
+- **Network tests (Reach)** contact public endpoints only: the model API
+  hosts (`api.anthropic.com`, `api.openai.com`) for DNS/TLS timing,
+  `speed.cloudflare.com` for a 25 MB download and an 8 MB upload of zero
+  bytes, and the npm registry for one metadata request. They send **no
+  credentials and no API keys**. Skip them with `--no-network`.
 - **`--fetch-tools`** downloads a pinned ripgrep (SHA-256 checked), and Node
   only if Node is missing. Both are stored in `~/.agentperf/tools`; PATH is
   never modified. Without the flag, nothing is downloaded.
@@ -36,9 +43,11 @@ raw result in public.** Use:
 agentperf share my-result.json
 ```
 
-`share` removes or generalizes: hostname, label, run id, workdir and other
-home paths (macOS, Linux, and Windows forms), process names (kept only as
-counts), security brand names (kept only as detected/active flags), tool
+`share` removes or generalizes: hostname, label, run id (including run ids
+nested inside combined results, at any depth; timestamps there are cut to
+the day), workdir and other home paths including everything under them
+(macOS, Linux, and Windows forms), volume names, process names (kept only
+as counts), security brand names (kept only as detected/active flags), tool
 paths (file names only), and IP/MAC addresses plus user/host names appearing
 in kept free-text fields. It prints every change. One limit: a hardware
 serial number typed into a free-text field by hand looks like any other hex

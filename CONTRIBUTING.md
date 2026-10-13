@@ -72,9 +72,11 @@ attach raw results.
 
 ## Result schema and comparability
 
-Every result records `schema`, `suite_version`, and the corpus
-`fixture_hash`. Scores compare only when all three match and the same
-reference file is used. Changing corpus generation must bump
+Every result records `schema`, `suite_version`, the corpus `fixture_hash`,
+and a measurement/scoring `fingerprint`. Scores compare only when the corpus
+fixture hash, the scored benchmark definitions, the measurement methods, and
+the fingerprint all match, and the same reference file is used. Version
+strings never decide comparability. Changing corpus generation must bump
 `CORPUS_FORMAT` (the test suite pins the hash).
 
 ## Style

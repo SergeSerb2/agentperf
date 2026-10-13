@@ -208,8 +208,8 @@ def causes(result, reference) -> List[Dict[str, object]]:
             "Antivirus / endpoint security scanning", "likely",
             "Security scanning taxes every process start and small-file operation. "
             "On one measured PC (October 2026), native Windows with third-party "
-            "real-time antivirus, an endpoint security agent, and the Windows "
-            "Search indexer scored far below WSL2 on the same hardware (see the "
+            "real-time antivirus and the Windows Search indexer scored far "
+            "below WSL2 on the same hardware (see the "
             "bundled profiles). Scanning is part of that gap. It was not measured "
             "on its own: that PC was never run with scanning off, and the native "
             "side also differed in shell (Git Bash) and Python version.",
@@ -240,8 +240,8 @@ def causes(result, reference) -> List[Dict[str, object]]:
               "reference on this machine.",
               "Measured on the bundled reference hardware (i7-12700K, October "
               "2026): the native-Windows profile (third-party real-time "
-              "antivirus, an endpoint security agent, and the Windows Search "
-              "indexer active, shell commands through Git Bash) scored far "
+              "antivirus and the Windows Search indexer active, shell "
+              "commands through Git Bash) scored far "
               "below WSL2 on the same PC. That gap is everything that native "
               "setup added; it was not split into parts, and no run with "
               "scanning off exists. One PC, with those settings; your gap "

@@ -73,7 +73,8 @@ class DiagnoseTest(unittest.TestCase):
         self.assertIn("WSL2", items[0]["topic"])
         # The same-PC gap must carry its conditions, never a bare number.
         evidence = " ".join(items[0]["evidence"])
-        self.assertIn("endpoint", evidence)
+        self.assertIn("third-party real-time antivirus", evidence)
+        self.assertIn("Windows Search indexer", evidence)
         self.assertIn("Git Bash", evidence)
         self.assertIn("no run with", evidence)
         self.assertTrue(items[0]["evidence"])
