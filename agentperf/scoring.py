@@ -35,7 +35,10 @@ LW100_MIX = [
 
 def load(path: str) -> Dict[str, object]:
     with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+        doc = json.load(fh)
+    if not isinstance(doc, dict) or not isinstance(doc.get("benchmarks"), dict):
+        raise ValueError("not an agentperf result file: {} (no benchmarks object)".format(path))
+    return doc
 
 
 def _ratio(entry: Dict[str, object], ref: Dict[str, object], value: Optional[float] = None) -> float:

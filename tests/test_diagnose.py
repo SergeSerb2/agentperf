@@ -222,6 +222,15 @@ class CliSmokeTest(unittest.TestCase):
             self.assertEqual(main(["share", src, "--out", out]), 0)
             html_path = os.path.join(tmp, "r.html")
             self.assertEqual(main(["report", src, "--html", html_path]), 0)
+            # Expected failures are clean messages with rc 2, not tracebacks.
+            self.assertEqual(main(["report", os.path.join(tmp, "missing.json")]), 2)
+            bad = os.path.join(tmp, "bad.json")
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write("not json")
+            self.assertEqual(main(["share", bad]), 2)
+            with open(bad, "w", encoding="utf-8") as fh:
+                json.dump({"hello": 1}, fh)
+            self.assertEqual(main(["compare", bad]), 2)
             with open(html_path, encoding="utf-8") as fh:
                 self.assertIn("Biggest wins", fh.read())
         finally:
