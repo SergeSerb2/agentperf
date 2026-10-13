@@ -12,7 +12,8 @@ import platform
 import socket
 import sys
 
-from .. import SCHEMA_VERSION, SUITE_VERSION
+from .. import PACKAGE_VERSION, SCHEMA_VERSION, SUITE_VERSION
+from ..util import rmtree
 from . import fixture as fixture_mod
 from . import harness as harness_mod
 from . import tasks as tasks_mod
@@ -46,6 +47,9 @@ def add_parser(subparsers):
                         help="keep the user's own settings, hooks, and MCP servers")
     parser.add_argument("--dry-run", action="store_true",
                         help="build fixtures, print versions and commands, spend no tokens")
+    parser.add_argument("--clean", action="store_true",
+                        help="delete each run's fixture copy after verification "
+                             "(default: keep them under the workdir for inspection)")
     parser.set_defaults(func=run)
 
 
@@ -106,8 +110,23 @@ def run(args):
 
     missing = [n for n in harnesses if not harness_mod.find_binary(n)]
     if missing:
-        print("error: CLI not found on PATH: %s" % ", ".join(missing), file=sys.stderr)
-        return 2
+        available = [n for n in harnesses if n not in missing]
+        if not available:
+            print("error: no harness CLI found on PATH (looked for: %s). "
+                  "Install Claude Code and/or Codex first." % ", ".join(harnesses),
+                  file=sys.stderr)
+            return 2
+        print("warning: CLI not found for %s; running %s only"
+              % (", ".join(missing), ", ".join(available)))
+        harnesses = available
+
+    sessions = len(harnesses) * len(task_names)
+    print("Live runs use your own Claude Code / Codex accounts and COST TOKENS: "
+          "%d session(s) (%s x %s), up to %s s each."
+          % (sessions, ", ".join(harnesses), ", ".join(task_names), args.timeout))
+    print("Sandboxes: claude runs with --permission-mode bypassPermissions; "
+          "codex runs with -s %s. Both work only in throwaway fixture copies "
+          "under %s." % (opts["codex_sandbox"], workdir))
 
     started = datetime.datetime.now(datetime.timezone.utc)
     runs = []
@@ -152,6 +171,8 @@ def run(args):
             print("  %s wall=%.1fs tool=%.1fs model=%.1fs tools=%d"
                   % ("PASS" if success else "FAIL",
                      r["wall_s"], r["tool_s"], r["model_s"], r["tool_calls"]))
+            if getattr(args, "clean", False):
+                rmtree(dest)
 
     out = args.out
     if not out:
@@ -164,6 +185,7 @@ def run(args):
         "schema": SCHEMA_VERSION,
         "kind": "live",
         "suite_version": SUITE_VERSION,
+        "package_version": PACKAGE_VERSION,
         "label": label,
         "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platform": {
@@ -178,4 +200,6 @@ def run(args):
         json.dump(payload, fh, indent=2)
         fh.write("\n")
     print("wrote %s" % out)
+    if not getattr(args, "clean", False):
+        print("run fixture copies kept under %s (delete them any time, or use --clean)" % workdir)
     return 0 if all(r["success"] for r in runs) else 1

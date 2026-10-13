@@ -1,9 +1,13 @@
+import argparse
 import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from agentperf.live import fixture as fixture_mod
+from agentperf.live import harness as harness_mod
+from agentperf.live import run as live_run
 from agentperf.live import tasks as tasks_mod
 from agentperf.live.parsers import ClaudeParser, CodexParser
 
@@ -128,6 +132,23 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(r["tokens"]["input"], 30488)
         self.assertEqual(r["tokens"]["output"], 46)
         self.assertEqual(r["tokens"]["cache_read"], 27264)
+
+
+class MissingHarnessTests(unittest.TestCase):
+    def _args(self, workdir):
+        return argparse.Namespace(
+            harness="claude,codex", tasks="fix", claude_model="sonnet",
+            codex_model=None, codex_effort="low", codex_sandbox="workspace-write",
+            timeout=10, workdir=workdir, out=os.path.join(workdir, "out.json"),
+            label="test", realistic=False, dry_run=False, clean=False)
+
+    def test_no_harness_installed_is_a_clean_error(self):
+        tmp = tempfile.mkdtemp(prefix="agentperf-test-")
+        try:
+            with mock.patch.object(harness_mod, "find_binary", return_value=None):
+                self.assertEqual(live_run(self._args(tmp)), 2)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
