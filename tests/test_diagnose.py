@@ -117,19 +117,37 @@ class PrivacyTest(unittest.TestCase):
             "hostname": "my-laptop.local", "workdir": "/Users/alice/.agentperf/work",
             "cpu_model": "Apple M1", "os_family": "macos",
             "top_processes": [{"name": "SecretApp", "cpu": 99.0}],
-            "security_agents": ["Bitdefender"],
-            "antivirus": [{"name": "Bitdefender Antivirus", "active": True}],
+            "security_agents": ["ExampleAV"],
+            "antivirus": [{"name": "ExampleAV Antivirus", "active": True}],
         })
         doc["run_id"] = "abc"
         doc["tools"] = {"git": "/Users/alice/bin/git"}
         clean, changes = privacy.anonymize(doc)
         text = json.dumps(clean)
-        for needle in ("alice", "my-laptop", "Bitdefender", "SecretApp", "abc"):
+        for needle in ("alice", "my-laptop", "ExampleAV", "SecretApp", "abc"):
             self.assertNotIn(needle, text)
         self.assertEqual(clean["system"]["processes_over_80pct"], 1)
         self.assertTrue(clean["system"]["antivirus"][0]["active"])
         self.assertTrue(clean["anonymized"])
         self.assertIn("hostname", doc["system"])  # input not mutated
+
+
+    def test_anonymize_scrubs_addresses_and_windows_paths_in_free_text(self):
+        doc = _doc("alice-box", {"process.shell": _entry("process", 5.0)}, {
+            "hostname": "alice-box.local", "workdir": r"C:\Users\alice\.agentperf\work",
+            "cpu_model": "Some CPU", "os_family": "windows",
+            "note": ("ssh alice-box at 192.168.1.42 and 100.101.102.103, mac "
+                     "aa:bb:cc:dd:ee:ff, host box.example.ts.net, user alice, "
+                     "ipv6 fe80::1ff:fe23:4567, paths /home/alice/x and "
+                     r"C:\Users\alice\y" + " and C:/Users/alice/z"),
+        })
+        doc["skipped"] = {"x": "failed for alice at 10.0.0.5"}
+        clean, changes = privacy.anonymize(doc)
+        text = json.dumps(clean)
+        for needle in ("alice", "alice-box", "192.168.", "100.101", "10.0.0.5",
+                       "aa:bb", "fe80::", ".ts.net"):
+            self.assertNotIn(needle, text, needle)
+        self.assertTrue(any("scrubbed" in c for c in changes), changes)
 
 
 class BundledReferencesTest(unittest.TestCase):

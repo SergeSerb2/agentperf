@@ -24,19 +24,65 @@ from typing import Dict, List, Tuple
 _DROP_SYSTEM = ("hostname", "workdir", "top_processes", "physical_disks",
                 "fs_device", "fs_mount", "model_id")
 
+_HOME_CAPTURE = [
+    re.compile(r"/Users/([^/\"'\\\s]+)"),
+    re.compile(r"/home/([^/\"'\\\s]+)"),
+    re.compile(r"[A-Za-z]:\\Users\\([^\\\"'\s]+)"),
+    re.compile(r"[A-Za-z]:/Users/([^/\"'\s]+)"),
+]
 _HOME_RE = [
     (re.compile(r"/Users/[^/\"'\\\s]+"), "/Users/<user>"),
     (re.compile(r"/home/[^/\"'\\\s]+"), "/home/<user>"),
-    (re.compile(r"[A-Za-z]:\\\\Users\\\\[^\\\\\"'\s]+"), r"C:\Users\<user>"),
+    (re.compile(r"[A-Za-z]:\\Users\\[^\\\"'\s]+"), r"C:\Users\<user>"),
     (re.compile(r"[A-Za-z]:/Users/[^/\"'\s]+"), "C:/Users/<user>"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
+    (re.compile(r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b"
+                r"|\b[0-9a-fA-F]{0,4}::[0-9a-fA-F:]+\b"), "<ip>"),
+    (re.compile(r"\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b"), "<mac>"),
+    (re.compile(r"\b[\w.-]+\.ts\.net\b"), "<host>"),
 ]
+_NOT_NAMES = {"<user>", "shared", "public", "default", "users", "home"}
 
 
-def _scrub_text(value):
+def _candidate_names(doc) -> List[str]:
+    """User/host names worth scrubbing as bare words: home-path users + hostname."""
+    names: List[str] = []
+
+    def add(name):
+        name = (name or "").strip()
+        if len(name) >= 3 and name.lower() not in _NOT_NAMES and name not in names:
+            names.append(name)
+
+    def walk(node):
+        if isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+        elif isinstance(node, str):
+            for rx in _HOME_CAPTURE:
+                for match in rx.finditer(node):
+                    add(match.group(1))
+
+    walk(doc)
+    hostname = str((doc.get("system") or {}).get("hostname") or "")
+    add(hostname)
+    add(hostname.split(".")[0])
+    return names
+
+
+def _scrub_text(value, names=(), counter=None):
     if not isinstance(value, str):
         return value
     for rx, repl in _HOME_RE:
-        value = rx.sub(lambda m, r=repl: r, value)
+        value, n = rx.subn(lambda m, r=repl: r, value)
+        if counter is not None:
+            counter[0] += n
+    for name in names:
+        value, n = re.subn(r"\b" + re.escape(name) + r"\b", "<name>", value)
+        if counter is not None:
+            counter[0] += n
     return value
 
 
@@ -54,6 +100,7 @@ def _generic_label(doc: Dict[str, object]) -> str:
 def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], List[str]]:
     """Return (clean copy, list of human-readable changes). Does not mutate input."""
     out = copy.deepcopy(doc)
+    names = _candidate_names(out)
     changes: List[str] = []
     old_label = out.get("label")
     out["label"] = label or _generic_label(out)
@@ -94,14 +141,19 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
             tools[key] = os.path.basename(str(value).replace("\\", "/"))
     if tools:
         changes.append("tool paths reduced to file names")
-    # Scrub any remaining home paths in every string field we keep.
+    # Scrub home paths, addresses, and known user/host names in kept strings.
+    counter = [0]
+
     def scrub(node):
         if isinstance(node, dict):
             return {k: scrub(v) for k, v in node.items()}
         if isinstance(node, list):
             return [scrub(v) for v in node]
-        return _scrub_text(node)
+        return _scrub_text(node, names, counter)
 
     out = scrub(out)
+    if counter[0]:
+        changes.append("scrubbed {} private string(s) (home paths, IP/MAC addresses, "
+                       "user/host names) in kept fields".format(counter[0]))
     out["anonymized"] = True
     return out, changes
