@@ -4,6 +4,43 @@ Scores are comparable only within the same suite version, corpus hash, and
 reference file. A suite change that moves scores bumps the minor version and
 says what moved.
 
+## 0.2.2 - 2026-10-13
+
+Launch-readiness fixes from a full review. No scored test, weight, or corpus
+changed (one new unscored diagnostic), and bundled-profile scores are
+unchanged, so 0.2.2 scores compare directly with 0.2.0/0.2.1 scores.
+
+- **`remote` works from `agentperf.pyz`.** It used to build an empty archive
+  when run from the single file. Remote commands are now quoted safely,
+  labels are validated, and unreachable hosts are reported as unreachable
+  instead of as Windows.
+- **`share` scrubs harder.** Windows home paths, IP and MAC
+  addresses, tailnet names, and bare user/host names in free-text fields are
+  now removed, and the printed change list counts them.
+- **Versions and intervals are labelled plainly.** Reports show the program
+  version and the result's suite version separately; the bootstrap interval
+  is now called a "90% within-run interval" everywhere, because between-run
+  spread is larger. Reports also warn when two files are not comparable
+  (different corpus hash or test definitions).
+- **Honester Windows advice.** A launch directory under `/mnt/` no longer
+  takes the top finding (only a work directory there compromises the score),
+  the run-in-WSL2 cause fires only when the machine shows the slow pattern,
+  and the 67-vs-1000 figure is always stated with its conditions (one PC,
+  real-time antivirus plus indexing, October 2026).
+- **First-run robustness.** Expected errors (missing or malformed files,
+  `--runs 0`, unwritable installs) print one clear line instead of a
+  traceback. One run per work directory, enforced with a lock; a damaged
+  corpus cache is regenerated; an unresponsive git (the macOS shim without
+  Command Line Tools) skips git tests instead of hanging. `doctor` now
+  checks disk space, load, power, /mnt and tmpfs workdirs, and prints home
+  paths as `~`.
+- **`live` warns before it spends**, skips a missing harness with a warning
+  instead of aborting, and can `--clean` its fixture copies.
+- **`compare --weights equal`** re-scores with equal category weights; the
+  sensitivity table is in METHODOLOGY (rankings hold under every weighting
+  tried; points move up to ~30%). New `docs/FAQ.md`, `diag.node_spawn`
+  diagnostic, GitHub issue templates, and CI on Python 3.13.
+
 ## 0.2.1 - 2026-10-13
 
 Report fixes only. No test, weight, or corpus changed, so 0.2.1 scores are
