@@ -110,14 +110,43 @@ def attribution(result, reference) -> Dict[str, object]:
 
 # ------------------------------------------------------------------ causes
 
-def _cause(topic, confidence, summary, evidence, fix, affected, result, reference):
+MINOR_GAIN_POINTS = 5.0
+
+
+def partition_causes(items):
+    """Split ranked causes into (major, minor).
+
+    A scored cause whose upper-bound gain is under MINOR_GAIN_POINTS is
+    minor: real, but not worth a headline card. Unscored causes (no
+    affected tests, paid per tool call) have no upper bound and stay major.
+    """
+    major, minor = [], []
+    for c in items:
+        if c.get("affected") and (c.get("gain_points") or 0.0) < MINOR_GAIN_POINTS:
+            minor.append(c)
+        else:
+            major.append(c)
+    return major, minor
+
+
+def _on_windows_drive(s) -> bool:
+    """True when the work directory (or the invoking directory) is /mnt/* in WSL."""
+    if s.get("workdir_on_windows_drive") or s.get("cwd_on_windows_drive"):
+        return True
+    if not (s.get("os_family") == "wsl" or s.get("wsl")):
+        return False
+    return any(str(s.get(k) or "").startswith("/mnt/") for k in ("workdir", "cwd"))
+
+
+def _cause(topic, confidence, summary, evidence, fix, affected, result, reference, priority=0):
     gain = gain_if_fixed(result, reference, affected) if affected else {}
     return {
         "topic": topic, "confidence": confidence, "summary": summary,
-        "evidence": evidence, "fix": fix, "affected": sorted(affected),
+        "evidence": evidence, "fix": fix, "affected": sorted(set(affected)),
         "gain_points": gain.get("gain_points") or 0.0,
         "gain_pct": gain.get("gain_pct") or 0.0,
         "agentmark_if_fixed": gain.get("if_fixed"),
+        "priority": priority,
     }
 
 
@@ -176,18 +205,50 @@ def causes(result, reference) -> List[Dict[str, object]]:
              "Keep repos off synced folders (iCloud, OneDrive) and off /mnt/<drive> in WSL."],
             process_ids + file_ids, result, reference))
 
+    # Native Windows: the measured same-hardware WSL2 gap is the headline win.
+    if s.get("os_family") == "windows":
+        ev = ["Probe: this run is native Windows (os_family=windows), not WSL2.",
+              "Measured on the bundled reference hardware (i7-12700K): native "
+              "Windows scores AgentMark 67 while WSL2 on the same PC scores "
+              "1000. The CPU is not the limit; per-process and per-file costs are."]
+        shell = _median(result, "process.shell")
+        ref_shell = _median(reference, "process.shell")
+        if shell and ref_shell and shell > 2 * ref_shell:
+            ev.append("Pattern: a shell start costs {:.1f} ms here vs {:.1f} ms on the "
+                      "WSL2 reference.".format(shell, ref_shell))
+        out.append(_cause(
+            "Run agents in WSL2 with repos on the Linux filesystem", "likely",
+            "On the reference PC the same hardware scored 67 natively on "
+            "Windows and 1000 in WSL2 - the largest single change agentperf "
+            "has measured. Agents start processes and touch small files all "
+            "day; WSL2 does both at Linux cost. Keep repos on the Linux "
+            "filesystem: under /mnt/c they are slower than native Windows "
+            "(2,000 small files: 41.8 s on /mnt/c vs 0.024 s on WSL ext4 "
+            "vs 3.0 s natively).",
+            ev,
+            ["Install WSL2 (wsl --install) and run the agent inside it.",
+             "Clone repos inside the Linux filesystem (for example ~/code), never under /mnt/c.",
+             "Open them from Windows via \\\\wsl$ only for occasional file access.",
+             "If agents must stay native, use a Dev Drive and antivirus exclusions for code folders."],
+            process_ids + file_ids + [b for b in rr if b.startswith(("git.", "search.", "transfer."))],
+            result, reference, priority=90))
+
     # Workdir location.
-    if s.get("workdir_on_windows_drive"):
+    if _on_windows_drive(s):
+        where = "benchmark work directory" if (s.get("workdir_on_windows_drive")
+                or str(s.get("workdir") or "").startswith("/mnt/")) else "directory you ran from"
         out.append(_cause(
             "Repository on a Windows drive from WSL (/mnt/...)", "observed",
-            "The benchmark work directory is under /mnt/. In WSL2 every file "
+            "The {} is under /mnt/. In WSL2 every file "
             "operation crosses to Windows NTFS through 9P. Measured: creating "
-            "2,000 small files took 41.8 s on /mnt/c vs 0.024 s on WSL ext4.",
-            ["Probe: workdir_on_windows_drive is set for this run."],
+            "2,000 small files took 41.8 s on /mnt/c vs 0.024 s on WSL ext4 "
+            "vs 3.0 s on native Windows. Move the repo; nothing else matters "
+            "until this is fixed.".format(where),
+            ["Probe: the {} for this run is under /mnt/ (a Windows drive seen from WSL).".format(where)],
             ["Clone repos inside the Linux filesystem (for example ~/code).",
              "Access them from Windows via \\\\wsl$ only when you must."],
             file_ids + [b for b in rr if b.startswith(("git.", "search.", "transfer."))],
-            result, reference))
+            result, reference, priority=100))
     if s.get("workdir_in_icloud"):
         out.append(_cause(
             "Work directory in a synced folder (iCloud/CloudStorage)", "observed",
@@ -385,7 +446,7 @@ def causes(result, reference) -> List[Dict[str, object]]:
             ["Use Python 3.11 or newer for agent tooling and scripts."],
             ["compute.python"], result, reference))
 
-    out.sort(key=lambda c: -(c["gain_points"] or 0))
+    out.sort(key=lambda c: (-(c.get("priority") or 0), -(c["gain_points"] or 0)))
     return out
 
 

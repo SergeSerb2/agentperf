@@ -4,5 +4,5 @@ Standard library only. Supports Python 3.8 through 3.14 on macOS, Linux
 (including WSL2), and Windows.
 """
 
-SUITE_VERSION = "0.2.0"
+SUITE_VERSION = "0.2.1"
 SCHEMA_VERSION = 1

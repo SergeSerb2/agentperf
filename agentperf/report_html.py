@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from . import SUITE_VERSION, scoring
 from .advice import advise
 from .registry import CATEGORY_TITLES, CATEGORY_WEIGHTS
-from .util import fmt_num
+from .util import fmt_gain, fmt_num
 
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 SERIES_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
@@ -432,6 +432,11 @@ code {{ font-size:12px; }}
 #tip {{ position:fixed; pointer-events:none; background:var(--surface-1); color:var(--text-primary); border:1px solid var(--border);
   border-radius:6px; padding:6px 9px; font-size:12px; box-shadow:0 4px 14px rgba(0,0,0,.12); display:none; max-width:320px; z-index:10; }}
 details summary {{ cursor:pointer; color:var(--text-secondary); }}
+@media (max-width:560px) {{ .viz-root {{ padding:14px; }} section, .card {{ padding:12px; }}
+  h1 {{ font-size:19px; }} .tiles {{ grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); }}
+  .tile-value {{ font-size:24px; }} .minis, .cards {{ grid-template-columns:1fr; }}
+  .facts {{ columns:1; }} table.heat, table.raw, table.attr {{ display:block; overflow-x:auto; white-space:nowrap; }}
+  .scale i {{ width:100px; }} }}
 </style></head>
 <body><div class="viz-root"><main>
 <svg width="0" height="0" style="position:absolute"><defs><pattern id="hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
@@ -527,14 +532,15 @@ def _cause_cards(result, reference) -> str:
         return ('<section><p>No dominant software cause stands out. The remaining gap to the '
                 'reference is explained by the per-test attribution below (mostly hardware '
                 'and OS process/file costs).</p></section>')
+    major, minor = diagnose.partition_causes(items)
     cards = []
-    for i, c in enumerate(items, 1):
+    for i, c in enumerate(major, 1):
         gain = ""
         if c["gain_points"]:
             gain = ('<div class="gain">up to +{} AgentMark</div>'
                     '<div class="muted small">if the affected tests reached reference speed '
                     '(upper bound; gains overlap and do not add up)</div>').format(
-                        fmt_num(c["gain_points"]))
+                        fmt_gain(c["gain_points"]))
         ev = "".join('<li class="ev">{}</li>'.format(esc(e)) for e in c["evidence"])
         fix = "".join('<li class="fix">{}</li>'.format(esc(f)) for f in c["fix"])
         aff = ", ".join(c["affected"]) or "not scored (paid per tool call)"
@@ -544,7 +550,19 @@ def _cause_cards(result, reference) -> str:
                      '<p class="muted small">Affected tests: {}</p></div>'.format(
                          i, esc(c["topic"]), esc(c["confidence"]), esc(c["confidence"]),
                          gain, esc(c["summary"]), ev, fix, esc(aff)))
-    return '<div class="cards">{}</div>'.format("".join(cards))
+    out = ""
+    if cards:
+        out += '<div class="cards">{}</div>'.format("".join(cards))
+    else:
+        out += ('<section><p>No large win stands out. The minor items below are each worth '
+                'under +{} AgentMark.</p></section>').format(fmt_gain(diagnose.MINOR_GAIN_POINTS))
+    if minor:
+        rows = "".join('<li><b>{}</b> <span class="conf {}">{}</span> - up to +{} AgentMark. {}</li>'.format(
+            esc(c["topic"]), esc(c["confidence"]), esc(c["confidence"]),
+            fmt_gain(c["gain_points"]), esc(c["fix"][0]) if c["fix"] else "") for c in minor)
+        out += ('<section><details><summary>Minor wins ({} item(s), each under +{} AgentMark)</summary>'
+                '<ul>{}</ul></details></section>').format(len(minor), fmt_gain(diagnose.MINOR_GAIN_POINTS), rows)
+    return out
 
 
 def _attribution_sections(result, reference) -> str:
@@ -570,13 +588,13 @@ def _attribution_sections(result, reference) -> str:
                             tip, esc(t["id"]), esc(t["title"]), fmt_num(t["value"]),
                             fmt_num(t["reference"]), esc(t["unit"]), pct, color, t["ratio"],
                             fmt_num(t["score"]),
-                            "-" + fmt_num(t["gain_points"]) if t["gain_points"] else "-"))
+                            "-" + fmt_gain(t["gain_points"]) if t["gain_points"] else "-"))
         head = '{} - score {}'.format(esc(block["title"]), fmt_num(block["score"]))
         if block["weight"]:
             head += ' <span class="muted small">weight {:.0f} of 100</span>'.format(block["weight"])
         if block["gain_points"]:
             head += (' <span class="muted small">matching the reference here is worth up to '
-                     '+{} AgentMark</span>').format(fmt_num(block["gain_points"]))
+                     '+{} AgentMark</span>').format(fmt_gain(block["gain_points"]))
         out.append('<h3>{}</h3><section><table class="attr">{}</table></section>'.format(
             head, "".join(rows)))
     return "".join(out)
@@ -591,6 +609,7 @@ def _system_facts(result) -> str:
         ("governor", "CPU governor"), ("defender_realtime", "Defender real-time"),
         ("dev_drive", "Dev Drive"), ("rotational", "Spinning disk"),
         ("raid_resync", "RAID resync"), ("workdir_on_windows_drive", "Workdir on /mnt"),
+        ("cwd_on_windows_drive", "Ran from /mnt"),
         ("workdir_in_icloud", "Workdir synced"), ("spotlight", "Spotlight"),
         ("windows_search_running", "Windows Search"), ("time_machine_running", "Time Machine"),
         ("disk_free_gb", "Disk free (GB)"), ("virtualization", "Virtualization"),
@@ -651,7 +670,7 @@ def write_report(result, reference, path: str, references=None, title=None) -> N
             fmt_num(sc.get("reach")), sc["coverage"])
     drags = diagnose.attribution(result, reference)["biggest_drags"]
     drag_items = "".join('<li><code>{}</code> x{:.2f} vs reference - worth up to +{} AgentMark</li>'.format(
-        esc(t["id"]), t["ratio"], fmt_num(t["gain_points"])) for t in drags[:5]) or "<li>None: no test trails the reference.</li>"
+        esc(t["id"]), t["ratio"], fmt_gain(t["gain_points"])) for t in drags[:5]) or "<li>None: no test trails the reference.</li>"
     comparable = esc("suite {} - schema {} - corpus {} - reference '{}'".format(
         result.get("suite_version", SUITE_VERSION), result.get("schema", "?"),
         (result.get("corpus") or {}).get("fixture_hash", "?"), reference["label"]))

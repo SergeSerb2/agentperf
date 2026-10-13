@@ -61,6 +61,55 @@ class DiagnoseTest(unittest.TestCase):
     def test_no_cause_without_evidence_on_reference(self):
         self.assertEqual(diagnose.causes(REF, REF), [])
 
+    def test_windows_gets_wsl2_win_ranked_first(self):
+        win = _doc("win", {
+            "process.shell": _entry("process", 100.0),
+            "process.exec": _entry("process", 50.0),
+            "files.read": _entry("files", 1000.0, ops=2000),
+            "compute.sha256": _entry("compute", 1000.0, lower=False),
+        }, {"os_family": "windows", "cpu_model": "RefCPU", "python": "3.12.0"})
+        items = diagnose.causes(win, REF)
+        self.assertTrue(items)
+        self.assertIn("WSL2", items[0]["topic"])
+        self.assertIn("67", items[0]["summary"])
+        self.assertTrue(items[0]["evidence"])
+
+    def test_mnt_workdir_is_top_finding_in_wsl(self):
+        doc = _doc("wsl", {
+            "process.shell": _entry("process", 100.0),
+            "files.read": _entry("files", 5000.0, ops=2000),
+            "compute.sha256": _entry("compute", 100.0, lower=False),
+        }, {"os_family": "wsl", "wsl": True, "workdir": "/mnt/c/code/repo",
+            "cpu_model": "OtherCPU", "python": "3.12.0"})
+        items = diagnose.causes(doc, REF)
+        self.assertIn("/mnt/", items[0]["topic"] + items[0]["summary"])
+        self.assertEqual(items[0]["confidence"], "observed")
+
+    def test_mnt_detection_from_cwd_flag(self):
+        doc = _doc("wsl", {"files.read": _entry("files", 500.0, ops=2000)},
+                   {"os_family": "wsl", "cwd_on_windows_drive": True})
+        topics = [c["topic"] for c in diagnose.causes(doc, REF)]
+        self.assertTrue(any("/mnt/" in t for t in topics))
+
+    def test_minor_wins_are_partitioned_below_five_points(self):
+        major, minor = diagnose.partition_causes([
+            {"topic": "big", "gain_points": 94.0, "affected": ["a"]},
+            {"topic": "tiny", "gain_points": 0.825, "affected": ["b"]},
+            {"topic": "unscored", "gain_points": 0.0, "affected": []},
+        ])
+        self.assertEqual([c["topic"] for c in major], ["big", "unscored"])
+        self.assertEqual([c["topic"] for c in minor], ["tiny"])
+
+
+class GainFormatTest(unittest.TestCase):
+    def test_gains_render_as_whole_numbers(self):
+        from agentperf.util import fmt_gain
+        self.assertEqual(fmt_gain(94.0), "94")
+        self.assertEqual(fmt_gain(0.825), "1")
+        self.assertEqual(fmt_gain(1234.4), "1,234")
+        self.assertEqual(fmt_gain(None), "-")
+        self.assertEqual(fmt_gain(0), "0")
+
 
 class PrivacyTest(unittest.TestCase):
     def test_anonymize_strips_private_fields(self):

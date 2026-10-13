@@ -168,6 +168,10 @@ def _linux(workdir: str) -> Dict[str, object]:
     mdstat = _read("/proc/mdstat")
     out["raid_resync"] = bool(re.search(r"(resync|recovery|reshape|check)\s*=", mdstat))
     out["workdir_on_windows_drive"] = IS_WSL and workdir.startswith("/mnt/")
+    try:
+        out["cwd_on_windows_drive"] = IS_WSL and os.getcwd().startswith("/mnt/")
+    except OSError:
+        out["cwd_on_windows_drive"] = False
     return out
 
 

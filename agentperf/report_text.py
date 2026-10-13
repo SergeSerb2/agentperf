@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 from . import scoring
 from .advice import advise
 from .registry import CATEGORY_TITLES, CATEGORY_WEIGHTS
-from .util import fmt_num
+from .util import fmt_gain, fmt_num
 
 _ORDER = list(CATEGORY_WEIGHTS) + ["network", "diag"]
 
@@ -81,17 +81,21 @@ def why_summary(result, reference) -> str:
     if attr["biggest_drags"]:
         d = attr["biggest_drags"][0]
         lines.append("  Biggest drag: {} at x{:.2f} vs reference (worth up to +{} AgentMark).".format(
-            d["id"], d["ratio"], fmt_num(d["gain_points"])))
-    items = diagnose.causes(result, reference)[:3]
+            d["id"], d["ratio"], fmt_gain(d["gain_points"])))
+    major, minor = diagnose.partition_causes(diagnose.causes(result, reference))
+    items = major[:3]
     if items:
         lines.append("  Biggest wins (gains are upper bounds and overlap):")
         for i, c in enumerate(items, 1):
-            gain = "up to +{}".format(fmt_num(c["gain_points"])) if c["gain_points"] else "unscored win"
+            gain = "up to +{}".format(fmt_gain(c["gain_points"])) if c["gain_points"] else "unscored win"
             lines.append("  {}. [{}] {} ({})".format(i, c["confidence"], c["topic"], gain))
             if c["fix"]:
                 lines.append("     Fix: {}".format(c["fix"][0]))
     else:
         lines.append("  No dominant software cause found; see the HTML report for per-test attribution.")
+    if minor:
+        lines.append("  Minor wins (each under +{}): {}".format(
+            fmt_gain(diagnose.MINOR_GAIN_POINTS), "; ".join(c["topic"] for c in minor)))
     lines.append("  Full report: agentperf report <result>.json --html report.html")
     return "\n".join(lines)
 

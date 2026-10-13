@@ -121,3 +121,12 @@ reference profile, or improve a diagnosis rule:
 `python3 -m unittest discover -s tests -t .`
 
 License: MIT. Not affiliated with any other project of a similar name.
+
+## Roadmap
+
+- Publish to PyPI as `agentperf` (the name is free; needs a maintainer
+  PyPI account, so until then use the `git+https://` pipx install above).
+- More bundled reference profiles (especially Linux desktops and laptops
+  under no load), contributed with `agentperf share`.
+- Opt-in result history on one machine, so a tuning change shows its own
+  before/after instead of two loose JSON files.

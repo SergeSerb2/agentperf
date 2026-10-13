@@ -178,6 +178,13 @@ def fmt_num(value: Optional[float], digits: int = 3) -> str:
     return "{:.{}f}".format(value, min(decimals, 4))
 
 
+def fmt_gain(value: Optional[float]) -> str:
+    """AgentMark gains are upper bounds; whole numbers only, never +94.0."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "-"
+    return "{:,.0f}".format(round(float(value)))
+
+
 def fmt_bytes(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(n) < 1024 or unit == "TB":
