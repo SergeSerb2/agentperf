@@ -111,6 +111,37 @@ class ScoringTest(unittest.TestCase):
 
 
 class PackagingTest(unittest.TestCase):
+    def test_pyz_can_rebuild_itself_from_inside_a_pyz(self):
+        # Regression: `agentperf remote` run from agentperf.pyz used os.walk
+        # on a path inside the zip and silently shipped an empty archive.
+        import subprocess
+        import sys
+        from agentperf.remote import build_pyz
+        tmp = tempfile.mkdtemp()
+        try:
+            outer = build_pyz(os.path.join(tmp, "outer.pyz"))
+            inner = os.path.join(tmp, "inner.pyz")
+            driver = ("import sys; sys.path.insert(0, sys.argv[1]);"
+                      "from agentperf.remote import build_pyz; build_pyz(sys.argv[2])")
+            proc = subprocess.run([sys.executable, "-c", driver, outer, inner],
+                                  cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+            with zipfile.ZipFile(inner) as zf:
+                names = set(zf.namelist())
+            self.assertIn("agentperf/cli.py", names)
+            self.assertIn("agentperf/references/DEFAULT", names)
+            self.assertGreater(os.path.getsize(inner), 10000)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_remote_quoting_and_labels(self):
+        from agentperf.remote import quote_posix, quote_powershell, sanitize_label
+        self.assertEqual(quote_posix(["run", "--label", "a b;rm"]), "run --label 'a b;rm'")
+        self.assertEqual(quote_powershell(["python", "-u", "x.pyz", "a'b"]), "python -u x.pyz 'a''b'")
+        self.assertEqual(sanitize_label("my-mac_1.2"), "my-mac_1.2")
+        with self.assertRaises(SystemExit):
+            sanitize_label("bad label; rm -rf")
+
     def test_pyz_contains_package_and_entry_point(self):
         from agentperf.remote import build_pyz
         tmp = tempfile.mkdtemp()

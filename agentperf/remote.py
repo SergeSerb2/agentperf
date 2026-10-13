@@ -9,25 +9,75 @@ distros reached through a Windows host.
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import subprocess
 import tempfile
 import zipfile
-from typing import List
+from typing import List, Optional
 
 SSH = ["ssh", "-o", "BatchMode=yes"]
 SCP = ["scp", "-q", "-o", "BatchMode=yes"]
+
+_LABEL_OK = re.compile(r"^[A-Za-z0-9._-]+$")
+_PS_BARE = re.compile(r"^[A-Za-z0-9_.\-/:\\=,]+$")
+
+
+def sanitize_label(label: str) -> str:
+    """Labels land in remote file names and shell commands; keep them tame."""
+    if not _LABEL_OK.match(label or ""):
+        raise SystemExit("label {!r} may only contain letters, digits, '.', '_' and '-'".format(label))
+    return label
+
+
+def quote_posix(argv: List[str]) -> str:
+    return shlex.join(argv)
+
+
+def quote_powershell(argv: List[str]) -> str:
+    """Join argv for a PowerShell command line (single quotes, '' escapes a quote)."""
+    out = []
+    for arg in argv:
+        out.append(arg if _PS_BARE.match(arg) else "'" + arg.replace("'", "''") + "'")
+    return " ".join(out)
+
+
+def _running_archive() -> Optional[str]:
+    """Path of the zip this module was imported from, or None on a real disk install."""
+    path = os.path.abspath(__file__)
+    parts = path.split(os.sep)
+    for i in range(1, len(parts)):
+        candidate = os.sep.join(parts[:i])
+        if candidate and os.path.isfile(candidate) and zipfile.is_zipfile(candidate):
+            return candidate
+    return None
 
 
 def build_pyz(dest: str) -> str:
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(pkg_dir):
-            dirs[:] = [d for d in dirs if d != "__pycache__"]
-            for name in files:
-                if name.endswith((".py", ".json")) or name == "DEFAULT":
-                    full = os.path.join(root, name)
-                    arc = "agentperf/" + os.path.relpath(full, pkg_dir).replace(os.sep, "/")
-                    zf.write(full, arc)
+        if os.path.isdir(pkg_dir):
+            for root, dirs, files in os.walk(pkg_dir):
+                dirs[:] = [d for d in dirs if d != "__pycache__"]
+                for name in files:
+                    if name.endswith((".py", ".json")) or name == "DEFAULT":
+                        full = os.path.join(root, name)
+                        arc = "agentperf/" + os.path.relpath(full, pkg_dir).replace(os.sep, "/")
+                        zf.write(full, arc)
+        else:  # running from inside a .pyz: copy the package out of the archive
+            archive = _running_archive()
+            if not archive:
+                raise RuntimeError("cannot locate the agentperf package files to copy")
+            with zipfile.ZipFile(archive) as src:
+                copied = 0
+                for name in src.namelist():
+                    base = name.rsplit("/", 1)[-1]
+                    if name.startswith("agentperf/") and "__pycache__" not in name and (
+                            base.endswith((".py", ".json")) or base == "DEFAULT"):
+                        zf.writestr(name, src.read(name))
+                        copied += 1
+            if not copied:
+                raise RuntimeError("no agentperf package files found in " + archive)
         zf.writestr("__main__.py", "import sys\nfrom agentperf.cli import main\nsys.exit(main())\n")
     return dest
 
@@ -40,6 +90,10 @@ def _ssh(host: str, command: str, stream: bool = False) -> subprocess.CompletedP
 
 def _is_windows(host: str) -> bool:
     proc = _ssh(host, "uname -s")
+    if proc.returncode == 255:  # ssh itself failed: unreachable host, auth, DNS
+        detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise SystemExit("cannot reach {!r} over SSH{}".format(
+            host, ": " + detail[-1] if detail else ""))
     out = proc.stdout.decode("utf-8", "replace").strip()
     return proc.returncode != 0 or out.startswith(("MINGW", "MSYS", "CYGWIN"))
 
@@ -47,7 +101,8 @@ def _is_windows(host: str) -> bool:
 def run_remote(args) -> int:
     host = args.host
     windows = _is_windows(host)
-    label = args.label or (host + ("-wsl" if args.wsl else ""))
+    label = args.label or re.sub(r"[^A-Za-z0-9._-]", "-", host) + ("-wsl" if args.wsl else "")
+    sanitize_label(label)
     if args.wsl and not windows:
         raise SystemExit("--wsl needs a Windows host")
     print("Remote {} ({}{})".format(host, "windows" if windows else "posix",
@@ -79,13 +134,14 @@ def run_remote(args) -> int:
 
     if args.wsl:
         python = args.python or "python3"
-        command = "wsl -d {} -- {} -u .agentperf/agentperf.pyz {}".format(args.wsl, python, " ".join(sub))
+        command = quote_powershell(
+            ["wsl", "-d", args.wsl, "--", python, "-u", ".agentperf/agentperf.pyz"] + sub)
     elif windows:
         python = args.python or "python"
-        command = "{} -u .agentperf\\agentperf.pyz {}".format(python, " ".join(sub))
+        command = quote_powershell([python, "-u", ".agentperf\\agentperf.pyz"] + sub)
     else:
         python = args.python or "python3"
-        command = "cd ~ && {} -u .agentperf/agentperf.pyz {}".format(python, " ".join(sub))
+        command = "cd ~ && " + quote_posix([python, "-u", ".agentperf/agentperf.pyz"] + sub)
     print("$ ssh {} {}".format(host, command), flush=True)
     code = _ssh(host, command, stream=True).returncode
     if code != 0:
