@@ -116,6 +116,30 @@ def _method(entry):
     return ";".join(parts)
 
 
+def scoring_config_snapshot(category_weights=None) -> Dict[str, object]:
+    """The scoring configuration a result was produced under.
+
+    Stored in the document so a later reader can tell which category
+    weights its fingerprint was computed with, even after the defaults
+    change. Results written before this field existed carry no snapshot;
+    they are read with the current weights, which is what their stored
+    fingerprints were computed with at the time.
+    """
+    weights = category_weights or CATEGORY_WEIGHTS
+    return {"category_weights": {k: float(v) for k, v in sorted(weights.items())}}
+
+
+def _weights_for(doc):
+    config = (doc or {}).get("scoring_config") or {}
+    recorded = config.get("category_weights")
+    if isinstance(recorded, dict) and recorded:
+        try:
+            return {str(k): float(v) for k, v in recorded.items()}
+        except (TypeError, ValueError):
+            pass
+    return CATEGORY_WEIGHTS
+
+
 def fingerprint(doc, restrict=None) -> str:
     """Measurement/scoring fingerprint: one short hash of what was measured.
 
@@ -129,7 +153,9 @@ def fingerprint(doc, restrict=None) -> str:
     """
     h = hashlib.sha256()
     h.update(("corpus=" + str((doc.get("corpus") or {}).get("fixture_hash") or "")).encode())
-    h.update(repr(sorted(CATEGORY_WEIGHTS.items())).encode())
+    # The document's own recorded weights, so two documents made under
+    # different weights fingerprint differently in any later reader.
+    h.update(repr(sorted(_weights_for(doc).items())).encode())
     for bid in sorted((doc.get("benchmarks") or {})):
         if restrict is not None and bid not in restrict:
             continue
@@ -184,6 +210,28 @@ def compatibility_warnings(result, reference) -> List[str]:
             extra = (" transfer.read is about 2% of AgentMark; compare that "
                      "test only between machines that used the same cold-read method.")
         warnings.append("measurement methods differ for {}.{}".format(shown, extra))
+    # A stored fingerprint must match the document it travels with,
+    # recomputed under the document's own recorded scoring config.
+    for side, doc in (("result", result), ("reference", reference)):
+        stored = (doc or {}).get("fingerprint")
+        if stored and (doc or {}).get("benchmarks"):
+            try:
+                recomputed = fingerprint(doc)
+            except Exception:
+                recomputed = None
+            if recomputed is not None and stored != recomputed:
+                warnings.append("the {}'s stored fingerprint ({}) does not match "
+                                "its contents ({}): the file was edited or written "
+                                "under a different scoring config, so scores are "
+                                "not strictly comparable.".format(side, stored, recomputed))
+    mine_weights = _weights_for(result)
+    theirs_weights = _weights_for(reference)
+    if mine_weights != theirs_weights:
+        differ_cats = sorted(c for c in set(mine_weights) | set(theirs_weights)
+                             if mine_weights.get(c) != theirs_weights.get(c))
+        warnings.append("recorded category weights differ ({}); the two files were "
+                        "scored under different weights, so scores are not strictly "
+                        "comparable.".format(", ".join(differ_cats[:4])))
     # Fingerprint over the shared scored tests only: a missing test lowers
     # coverage; it must not look like a different measurement.
     shared = {b for b, e in (result.get("benchmarks") or {}).items()
@@ -214,25 +262,44 @@ def score(result, reference, restrict: Optional[Set[str]] = None, rounds: int = 
     # the point estimate.
     rng = random.Random(seed)
 
-    def boot_values(entry):
+    # Per-benchmark run samples, aligned by run index. An empty list is
+    # a run that did not measure this benchmark; it keeps its slot so
+    # run identity survives across benchmarks.
+    def aligned_runs(entry):
         runs = entry.get("run_samples")
-        if runs and len(runs) >= 2:
-            values = []
-            clean = [[float(s) for s in r] for r in runs if r]
-            for _ in range(rounds):
-                medians = []
-                for _run in range(len(clean)):
-                    chosen = clean[rng.randrange(len(clean))]
+        if not runs or len(runs) < 2:
+            return None
+        clean = [[float(s) for s in r] if r else [] for r in runs]
+        return clean if sum(1 for r in clean if r) >= 2 else None
+
+    runs_by_bench = {b: aligned_runs(result["benchmarks"][b]) for b in cats}
+    combined = any(runs_by_bench[b] is not None for b in cats)
+    out["ci_kind"] = "bootstrap over runs and samples" if combined else "within-run interval"
+    n_runs = max([len(r) for r in runs_by_bench.values() if r] or [0])
+
+    boot = {b: [] for b in cats}
+    for _round in range(rounds):
+        # Draw the run indices ONCE per round and use them for every
+        # benchmark. Runs are whole-machine states (a busy run is slow
+        # at everything at once); drawing per benchmark would break
+        # that correlation and understate the interval.
+        drawn = [rng.randrange(n_runs) for _i in range(n_runs)] if n_runs else []
+        for b in cats:
+            entry = result["benchmarks"][b]
+            clean = runs_by_bench[b]
+            if clean is None:
+                samples = entry["samples"]
+                n = len(samples)
+                boot[b].append(median([samples[rng.randrange(n)]
+                                       for _i in range(n)]))
+                continue
+            medians = []
+            for idx in drawn:
+                if idx < len(clean) and clean[idx]:
+                    chosen = clean[idx]
                     medians.append(median([chosen[rng.randrange(len(chosen))]
                                            for _i in range(len(chosen))]))
-                values.append(median(medians))
-            return values
-        return bootstrap_medians(entry["samples"], rounds, rng)
-
-    combined = any((result["benchmarks"][b].get("run_samples") or []) and
-                   len(result["benchmarks"][b]["run_samples"]) >= 2 for b in cats)
-    out["ci_kind"] = "bootstrap over runs and samples" if combined else "within-run interval"
-    boot = {b: boot_values(result["benchmarks"][b]) for b in cats}
+            boot[b].append(median(medians) if medians else float(entry["median"]))
     marks, reaches = [], []
     for i in range(rounds):
         rr = {b: _ratio(result["benchmarks"][b], reference["benchmarks"][b], boot[b][i]) for b in cats}

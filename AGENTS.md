@@ -15,7 +15,7 @@ agentperf measures how well a computer serves AI coding agents. It is one Python
 - **Privacy.** Never commit hostnames, usernames, home paths, IP addresses, SSH aliases, process lists, raw result files, or credentials. Bundled profiles are `share` output and nothing else. Placeholder hosts in docs are generic (`my-mac`, `linux-box`, `my-pc`). Before a push, grep the tree for personal strings.
 - **Failures must look like failures.** An empty run, a bad selector, a missing reference, and a failed remote run are errors with clear exit codes (see `docs/result-schema.md`). Never let a failed step fall back to stale data or a silent default.
 - **Never delete outside owned folders.** A run may delete only its own `corpus/`, `repo/`, and `scratch/` inside a directory marked `.agentperf-owned`. Any new deletion path needs the same ownership check and a test that proves user files survive.
-- **Keep the voice.** README, guides, and skill text are plain, warm, and precise. Short sentences. No feature dump. Gains are upper bounds. No percentiles.
+- **Keep the voice.** README, guides, and skill text are plain, warm, and precise. Short sentences. No feature dump. Gains are counterfactual estimates at reference speed. No percentiles.
 
 ## Layout
 
@@ -84,7 +84,7 @@ Rules for new tests:
 
 `CONTRIBUTING.md` has the full recipe. The short form: register a factory with `@bench(...)`, model one agent action, keep inputs fixed and OS-fair, skip cleanly with `Skip` when the tool is missing, and import the module from `agentperf/benches/__init__.py`. A new scored test moves every score, so treat it as a suite change (see Versions). A `diag.*` test never scores and is safe to add.
 
-Diagnosis rules (`agentperf/diagnose.py`) must cite evidence: a probe value or a measured pattern, with confidence `observed`, `likely`, or `possible`. Gains come from `gain_if_fixed()` and stay labelled as upper bounds. Never name a product no probe observed.
+Diagnosis rules (`agentperf/diagnose.py`) must cite evidence: a probe value or a measured pattern, with confidence `observed`, `likely`, or `possible`. Gains come from `gain_if_fixed()` and stay labelled as counterfactual estimates. Never name a product no probe observed.
 
 ## Ship checklist
 

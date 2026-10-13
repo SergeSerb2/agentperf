@@ -81,7 +81,10 @@ fast as that setup at this local work, nothing more.
   known corpus. Without `--fetch-tools`, the machine's own ripgrep build is
   part of the measurement.
 - **The scored shell is the same family everywhere.** `process.shell` and
-  `process.parallel` run bash with no profile files: the system bash on
+  `process.parallel` run bash with no profile files, and with inherited
+  shell-startup variables (`BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`)
+  removed from the launch environment, because `--noprofile --norc` alone
+  does not stop bash from reading `BASH_ENV`: the system bash on
   macOS and Linux, Git Bash on Windows, which is also the shell Claude Code
   uses there. Scoring `/bin/sh` would score dash on Ubuntu against bash
   elsewhere. Builds still differ (macOS ships bash 3.2; current Linux ships
@@ -125,7 +128,8 @@ Whole runs vary more than samples inside one run. In the October 2026
 re-measurement, the three runs behind the WSL2 reference profile scored 1006,
 982, and 984 against their own median; the three behind the Apple M1 Pro
 profile scored 436, 387, and 407. For close comparisons, use `--runs 3`
-(the headline is then the median of the run medians) and build references
+(the headline then scores, per test, the median of that test's run
+medians; it is not the median of the whole-run scores) and build references
 from three runs (`agentperf reference a.json b.json c.json`). The interval
 printed for a combined result bootstraps runs and samples together, so it
 describes the same estimator as the headline; for a single run it covers
@@ -145,8 +149,10 @@ spread inside that run only. Either way the reference stays fixed.
 - The 90% interval comes from a bootstrap (300 rounds) with the reference
   fixed. For a single run it resamples each test's samples and covers spread
   inside that run only; between-run spread is larger (see Statistics). For a
-  combined (`--runs N`) result it resamples runs and then samples within each
-  run, matching the median-of-run-medians headline. An interval never
+  combined (`--runs N`) result it draws run indices once per round, applies
+  them to every test (a slow run is slow at everything at once, and the
+  interval keeps that correlation), then resamples samples within each drawn
+  run, matching the per-test median-of-run-medians headline. An interval never
   excludes its own point estimate. Reports name which kind they printed.
 - **LW100** = modelled seconds of local wait per 100 agent tool calls, from the
   same one-developer history as the weights: 79 shell starts, 26 file reads,
@@ -228,8 +234,9 @@ into per-category and per-test parts. The report uses that split two ways:
 - **Attribution:** for each test, the report shows your value, the reference
   value, the speed ratio, and the AgentMark points the test costs. For any
   set of tests it computes the counterfactual score if those tests matched
-  the reference. That is an **upper bound** for a fix, and bounds for
-  overlapping causes do not add up.
+  the reference. That is a **counterfactual estimate** for a fix - what
+  matching the reference would be worth, not a ceiling on it - and
+  estimates for overlapping causes do not add up.
 - **Causes:** each named cause cites the probe or measurement pattern behind
   it and is labelled **observed** (a probe shows it), **likely** (probe plus
   matching pattern), or **possible** (pattern only). No cause is printed

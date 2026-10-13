@@ -394,6 +394,15 @@ def _check_combinable(docs, what: str) -> None:
     checks = [
         ("schema", distinct([d.get("schema") for d in docs])),
         ("corpus fixture hash", distinct([(d.get("corpus") or {}).get("fixture_hash") for d in docs])),
+        # The harness interpreter and the scored shell are part of what
+        # was measured: the same CPU under a different Python or shell
+        # version is a different measurement environment.
+        ("Python version", distinct([(d.get("system") or {}).get("python") for d in docs])),
+        ("shell version", distinct([
+            (d.get("tool_versions") or {}).get("shell")
+            or (d.get("tool_versions") or {}).get("bash") for d in docs])),
+        ("recorded scoring config", distinct([
+            repr(sorted(scoring._weights_for(d).items())) for d in docs])),
     ]
     for name, values in checks:
         if len(values) > 1:
@@ -419,18 +428,32 @@ def combine_runs(docs):
     from .util import median, summarize
     _check_combinable(docs, "combine")
     combined = json.loads(json.dumps(docs[0]))
-    for bid, entry in combined["benchmarks"].items():
+    all_ids = list(combined["benchmarks"])
+    for doc in docs[1:]:
+        for bid in doc["benchmarks"]:
+            if bid not in all_ids:
+                all_ids.append(bid)
+                combined["benchmarks"][bid] = json.loads(
+                    json.dumps(doc["benchmarks"][bid]))
+    for bid in all_ids:
+        entry = combined["benchmarks"][bid]
         runs = [d["benchmarks"][bid] for d in docs if bid in d["benchmarks"]]
         pooled = [s for r in runs for s in r["samples"]]
         stats = summarize(pooled)
         stats["median"] = median([float(r["median"]) for r in runs])
         entry.update(stats)
         entry["samples"] = pooled
-        entry["run_samples"] = [list(r["samples"]) for r in runs]
+        # Aligned with `docs`: an empty slot is a run that did not
+        # measure this benchmark. Scoring's bootstrap draws run
+        # indices once across benchmarks, so the slots must line up.
+        entry["run_samples"] = [
+            list(d["benchmarks"][bid]["samples"]) if bid in d["benchmarks"] else []
+            for d in docs]
         entry["run_medians"] = [float(r["median"]) for r in runs]
         entry["runs"] = len(runs)
         entry["noisy"] = stats["cv"] > 0.15
     combined["combined_runs"] = [{"run_id": d.get("run_id"), "started_at": d.get("started_at")} for d in docs]
+    combined["scoring_config"] = scoring.scoring_config_snapshot()
     combined["fingerprint"] = scoring.fingerprint(combined)
     return combined
 
@@ -446,6 +469,9 @@ def cmd_reference(args) -> int:
               "--ref instead.".format(os.path.dirname(REF_DIR)))
         return 2
     os.makedirs(REF_DIR, exist_ok=True)
+    doc = json.loads(json.dumps(doc))
+    doc["scoring_config"] = scoring.scoring_config_snapshot(scoring._weights_for(doc))
+    doc["fingerprint"] = scoring.fingerprint(doc)
     _write_json(doc, os.path.join(REF_DIR, name + ".json"))
     if args.default:
         with open(os.path.join(REF_DIR, "DEFAULT"), "w", encoding="utf-8") as fh:
@@ -469,6 +495,11 @@ def cmd_merge(args) -> int:
         merged.setdefault("merged_runs", []).append(
             {"run_id": doc.get("run_id"), "started_at": doc.get("started_at"),
              "benchmarks": sorted(doc["benchmarks"])})
+    # The merged document measures benchmarks no single input had
+    # together; keep its recorded config and fingerprint truthful.
+    merged["scoring_config"] = scoring.scoring_config_snapshot(
+        scoring._weights_for(merged))
+    merged["fingerprint"] = scoring.fingerprint(merged)
     _write_json(merged, args.out)
     print("Wrote {} ({} benchmarks)".format(args.out, len(merged["benchmarks"])))
     return 0
@@ -479,7 +510,7 @@ def cmd_combine(args) -> int:
     if args.label:
         doc["label"] = args.label
     _write_json(doc, args.out)
-    print("Wrote {} (median of {} runs)".format(args.out, len(args.results)))
+    print("Wrote {} (per-test median of {} runs)".format(args.out, len(args.results)))
     return 0
 
 
@@ -635,7 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--clean", action="store_true", help="delete the work directory afterwards")
     r.add_argument("--ref", help="reference name or result JSON to score against")
     r.add_argument("--runs", type=_positive_int, default=1,
-                   help="repeat the suite and keep the median of the run medians (single runs vary ~10-15%%)")
+                   help="repeat the suite and keep, per test, the median of the run medians (single runs vary ~10-15%%)")
     _add_json(r)
     r.set_defaults(func=cmd_run)
 
@@ -661,7 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
     mg.add_argument("--out", required=True)
     mg.set_defaults(func=cmd_merge)
 
-    cb = sub.add_parser("combine", help="combine repeated runs of one machine (median of medians)")
+    cb = sub.add_parser("combine", help="combine repeated runs of one machine (per-test median of run medians)")
     cb.add_argument("results", nargs="+")
     cb.add_argument("--out", required=True)
     cb.add_argument("--label")
@@ -711,7 +742,7 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument("--profile", choices=["quick", "standard"], default="standard")
     rm.add_argument("--quick", action="store_true", help="same as --profile quick on every host")
     rm.add_argument("--runs", type=_positive_int, default=1,
-                    help="repeat the suite on each host and keep the median of medians")
+                    help="repeat the suite on each host and keep, per test, the median of medians")
     rm.add_argument("--workdir", help="work directory on each host (default: ~/.agentperf/work there)")
     rm.add_argument("--fetch-tools", action="store_true")
     rm.add_argument("--clean", action="store_true")

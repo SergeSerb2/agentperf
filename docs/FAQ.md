@@ -73,8 +73,8 @@ methods; it is about 2% of the score.
 
 ## "103 on Windows vs 1000 in WSL2" - is Windows really 10x slower?
 
-That figure is one PC, in October 2026, the median of three runs on each
-side. The native side ran as-is: third-party real-time antivirus and the
+That figure is one PC, in October 2026. Each side combines three runs
+(per test, the median of the run medians, then scored). The native side ran as-is: third-party real-time antivirus and the
 Windows Search indexer active, shell commands through Git Bash, and an older
 Python (3.11 against 3.14 in WSL2). The gap is everything that native setup
 added compared with WSL2 on the same hardware. It is not a claim about every

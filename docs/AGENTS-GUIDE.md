@@ -159,7 +159,7 @@ Say the score, then the conditions, then the fixes. Example shape:
 Rules:
 
 - Within-run intervals (`agentmark_ci`) understate real spread. Between runs, expect about 10 to 15%. Call differences under about 15% a tie.
-- Gains ("up to +90") assume the affected tests reach reference speed. They are ceilings, and they overlap. Never add them. When `gain_estimated` is false, say "gain not estimated".
+- Gains ("about +90 at reference speed") are counterfactual estimates: they assume the affected tests reach reference speed. They are not ceilings and not promises, and they overlap. Never add them. When `gain_estimated` is false, say "gain not estimated".
 - Confidence words matter: observed, likely, possible. Keep them.
 - Coverage under about 90% means the score rests on fewer tests. Say which categories are thin.
 - Comparability warnings mean what they say. Different corpus, definitions, methods, or fingerprint: do not compare as equals. Version labels alone never block a comparison; the fingerprint does.

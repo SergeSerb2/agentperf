@@ -204,8 +204,16 @@ def copy_tree(ctx):
         counter[0] += 1
         dst = os.path.join(base, "copy{}".format(counter[0]))
         t0 = now()
-        copy_tree_buffered(ctx.corpus.tree, dst)
+        copied = copy_tree_buffered(ctx.corpus.tree, dst)
         secs = now() - t0
+        # Outside timing: the copy must have moved the whole corpus,
+        # or the MB/s below would credit bytes that never moved.
+        if copied != (len(ctx.corpus.files), ctx.corpus.total_bytes):
+            rmtree(dst)
+            raise RuntimeError(
+                "tree copy moved {} files / {} bytes; the corpus is {} files "
+                "/ {} bytes".format(copied[0], copied[1],
+                                    len(ctx.corpus.files), ctx.corpus.total_bytes))
         rmtree(dst)
         return mb / secs
 
@@ -220,6 +228,8 @@ def _corpus_targz(ctx) -> str:
     path = os.path.join(ctx.workdir, "corpus-{}.tar.gz".format(ctx.corpus.fixture_hash))
     if os.path.exists(path):
         return path
+    from ..runner import _record_owned_archive
+    _record_owned_archive(ctx.workdir, os.path.basename(path))
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tf:
         for rel in ctx.corpus.files:

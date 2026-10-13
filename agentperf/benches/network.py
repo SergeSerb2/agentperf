@@ -28,14 +28,19 @@ def _context_for(ctx, host: str, bench_id: str) -> ssl.SSLContext:
             with socket.create_connection((host, 443), timeout=10) as raw:
                 with verified.wrap_socket(raw, server_hostname=host):
                     pass
-            ctx.note(bench_id, tls_verified=True)
-            return verified
+            return verified, True
         except ssl.SSLCertVerificationError:
-            ctx.note(bench_id, tls_verified=False)
-            return ssl._create_unverified_context()  # timing only; no data is trusted
+            # timing only; no data is trusted
+            return ssl._create_unverified_context(), False
         except OSError as exc:
             raise Skip("cannot reach {}: {}".format(host, exc))
-    return ctx.cached("tls-context-" + host, make)
+
+    context, tls_verified = ctx.cached("tls-context-" + host, make)
+    # The note is per benchmark, the context per host: a cached context
+    # must still record the verification outcome under every benchmark
+    # that uses it, not only the first one.
+    ctx.note(bench_id, tls_verified=tls_verified)
+    return context
 
 
 def _handshake_ms(host: str, context: ssl.SSLContext) -> float:

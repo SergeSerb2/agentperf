@@ -88,7 +88,7 @@ def run_report(result, reference: Optional[Dict[str, object]] = None) -> str:
 
 
 def why_summary(result, reference) -> str:
-    """Short terminal WHY: verdict, ranked causes with upper-bound gains."""
+    """Short terminal WHY: verdict, ranked causes with estimated gains."""
     from . import diagnose
     sc = scoring.score(result, reference)
     lines = ["Why this score", "  " + diagnose.verdict(
@@ -96,14 +96,14 @@ def why_summary(result, reference) -> str:
     attr = diagnose.attribution(result, reference)
     if attr["biggest_drags"]:
         d = attr["biggest_drags"][0]
-        lines.append("  Biggest drag: {} at x{} vs reference (worth up to +{} AgentMark).".format(
+        lines.append("  Biggest drag: {} at x{} vs reference (about +{} AgentMark if it matched the reference).".format(
             d["id"], fmt_ratio(d["ratio"]), fmt_gain(d["gain_points"])))
     major, minor = diagnose.partition_causes(diagnose.causes(result, reference))
     items = major[:3]
     if items:
-        lines.append("  Biggest wins (gains are upper bounds and overlap):")
+        lines.append("  Biggest wins (each gain is an estimate if the affected tests reached reference speed; gains overlap):")
         for i, c in enumerate(items, 1):
-            gain = ("up to +{}".format(fmt_gain(c["gain_points"]))
+            gain = ("about +{} at reference speed".format(fmt_gain(c["gain_points"]))
                     if c.get("gain_estimated") and c["gain_points"] else "gain not estimated")
             lines.append("  {}. [{}] {} ({})".format(i, c["confidence"], c["topic"], gain))
             if c["fix"]:
@@ -146,6 +146,14 @@ def compare_report(results: List[Dict[str, object]], reference: Dict[str, object
         return "{:.1f}".format(value) if value is not None else "n/a"
 
     row("LW100 seconds (common)", [_lw_cell(r) for r in results])
+    lw_common = scoring.lw100(results[0], common) if results else None
+    if lw_common and lw_common["missing"]:
+        # A partial LW100 must say so wherever it is printed, including
+        # comparisons: the seconds cover only the parts every machine ran.
+        total_parts = len(lw_common["lines"]) + len(lw_common["missing"])
+        lines.append("LW100 above covers {} of {} parts on the common tests; "
+                     "missing: {}".format(len(lw_common["lines"]), total_parts,
+                                          "; ".join(lw_common["missing"])))
     lines.append("")
     for cat in _ORDER:
         if cat == "diag":

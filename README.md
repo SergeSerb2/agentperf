@@ -81,15 +81,15 @@ end of a run on a busy laptop (the full output also lists every test and a
 findings checklist):
 
 ```text
-AgentMark 408  (90% bootstrap over runs and samples 401-446, coverage 100%)  vs reference 'WSL2 - i7-12700K (reference, 1000)'
+AgentMark 408  (90% bootstrap over runs and samples 394-467, coverage 100%)  vs reference 'WSL2 - i7-12700K (reference, 1000)'
 Reach     3,287  (network to model APIs and CDNs)
 LW100     3.6 s estimated local wait per 100 tool calls (reference 1.0 s, same parts)
 
 Why this score
   About 2-3x slower than the reference at local agent work. Agents wait on local tools more than they need to; some of the gap may be the OS and its tools. See the biggest wins.
-  Biggest drag: process.parallel at x0.05 vs reference (worth up to +73 AgentMark).
-  Biggest wins (gains are upper bounds and overlap):
-  1. [possible] Process and file overhead (OS or security layer) (up to +335)
+  Biggest drag: process.parallel at x0.05 vs reference (about +73 AgentMark if it matched the reference).
+  Biggest wins (each gain is an estimate if the affected tests reached reference speed; gains overlap):
+  1. [possible] Process and file overhead (OS or security layer) (about +335 at reference speed)
      Fix: Rule out security software, indexing, and synced folders on code folders; what remains is the OS's own per-process cost.
   2. [observed] Background load during the run (gain not estimated)
      Fix: Quit or restart the busy processes (a daemon pinned near 100% for hours is a bug, not load).
@@ -248,7 +248,8 @@ Code tool calls. Most of them (79%) were shell commands, so process spawn
 counts the most.
 
 The tests try to be fair across operating systems. The scored shell is bash
-everywhere (Git Bash on Windows), scored copies move real bytes, the two
+everywhere (Git Bash on Windows), started with no profile files and with
+inherited shell-startup variables (`BASH_ENV` and friends) removed, scored copies move real bytes, the two
 large-file write tests make the same flush-to-device request on every OS,
 cold reads try to skip the file cache, and with `--fetch-tools` every
 machine searches with the same ripgrep build. Other tools (grep, git,

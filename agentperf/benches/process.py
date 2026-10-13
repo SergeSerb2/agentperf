@@ -7,21 +7,26 @@ import subprocess
 import sys
 
 from ..registry import bench
-from ..util import IS_WINDOWS, now, run
+from ..util import IS_WINDOWS, now, run, shell_env
 
 _NO_WINDOW = {"creationflags": 0x08000000} if IS_WINDOWS else {}
 
 
 SPAWN_TIMEOUT_S = 30.0
 
+# Recorded as benchmark metadata (not part of the scored method string):
+# scored shells run with inherited shell-startup variables removed.
+ENV_POLICY = "sanitized shell env (BASH_ENV, ENV, SHELLOPTS, BASHOPTS removed)"
 
-def _spawn_ms(argv, count: int) -> float:
+
+def _spawn_ms(argv, count: int, env=None) -> float:
     """Time *count* launches. A launch that fails or hangs fails the test:
     a broken tool must never earn a startup score."""
     t0 = now()
     for _ in range(count):
         proc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, timeout=SPAWN_TIMEOUT_S, **_NO_WINDOW)
+                              stderr=subprocess.DEVNULL, timeout=SPAWN_TIMEOUT_S,
+                              env=env, **_NO_WINDOW)
         if proc.returncode != 0:
             raise RuntimeError("{} exited with code {}".format(argv[0], proc.returncode))
     return (now() - t0) * 1000.0 / count
@@ -29,6 +34,11 @@ def _spawn_ms(argv, count: int) -> float:
 
 def _shell_argv(ctx, command: str):
     """The scored shell: bash with no profile files, on every OS.
+
+    ``--noprofile --norc`` alone is not enough: bash still reads an
+    inherited ``BASH_ENV`` for non-interactive shells. Scored launches
+    therefore also run with a sanitized environment (see
+    ``util.shell_env``), so no startup file runs at all.
 
     Agents start bash or zsh, not dash. Scoring /bin/sh would score dash on
     the Ubuntu reference against bash elsewhere. Git Bash on Windows is the
@@ -38,8 +48,9 @@ def _shell_argv(ctx, command: str):
     (shell,) = ctx.need("shell")
     name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower()
     kind = "bash" if "bash" in name else "sh"
-    ctx.note("process.shell", shell_kind=kind, shell=name)
-    ctx.note("process.parallel", shell_kind=kind, shell=name)
+    ctx.note("process.shell", shell_kind=kind, shell=name, env_policy=ENV_POLICY)
+    ctx.note("process.parallel", shell_kind=kind, shell=name, env_policy=ENV_POLICY)
+    ctx.note("diag.node_spawn", env_policy=ENV_POLICY + "; NODE_OPTIONS removed")
     if kind == "bash":
         return [shell, "--noprofile", "--norc", "-c", command]
     return [shell, "-c", command]
@@ -49,7 +60,8 @@ def _shell_argv(ctx, command: str):
        lower_is_better=True, models="Every Bash tool call starts a shell", reps=7, warmup=1)
 def shell_spawn(ctx):
     argv = _shell_argv(ctx, "true")
-    return lambda: _spawn_ms(argv, 30)
+    env = shell_env()
+    return lambda: _spawn_ms(argv, 30, env=env)
 
 
 @bench("process.exec", title="Native process spawn (true; cmd.exe on Windows)", unit="ms",
@@ -81,11 +93,30 @@ def node_spawn(ctx):
        models="Parallel tool calls and subagents", reps=5)
 def parallel_spawn(ctx):
     argv = _shell_argv(ctx, "true")
+    env = shell_env()
 
     def sample():
         t0 = now()
-        procs = [subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.DEVNULL, **_NO_WINDOW) for _ in range(32)]
+        procs = []
+        try:
+            for _ in range(32):
+                procs.append(subprocess.Popen(
+                    argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, env=env, **_NO_WINDOW))
+        except BaseException:
+            # A failed launch mid-batch must not leave the shells that
+            # did start running (or unreaped) behind it.
+            for proc in procs:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            for proc in procs:
+                try:
+                    proc.wait(timeout=10)
+                except Exception:
+                    pass
+            raise
         try:
             deadline = t0 + 120.0
             for proc in procs:
@@ -135,9 +166,13 @@ def node_spawn_diag(ctx):
     (node,) = ctx.need("node")
     argv = _shell_argv(ctx, "true")
     shell, shell_args = argv[0], argv[1:]
+    # Sanitized for node itself (NODE_OPTIONS could preload code into
+    # every launch) and inherited by the shells it spawns.
+    env = shell_env(node=True)
 
     def sample():
-        proc = run([node, "-e", _NODE_SPAWN_SCRIPT, shell, json.dumps(shell_args)], timeout=120)
+        proc = run([node, "-e", _NODE_SPAWN_SCRIPT, shell, json.dumps(shell_args)],
+                   timeout=120, env=env)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.decode("utf-8", "replace")[:200])
         return float(json.loads(proc.stdout.decode().strip().splitlines()[-1])["ms"])

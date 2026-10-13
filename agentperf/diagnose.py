@@ -7,7 +7,8 @@ Two layers, both honest about certainty:
    For every test we report its ratio to the reference and how many
    AgentMark points it costs (or earns). For any set of tests we can
    compute the counterfactual score if those tests matched the reference.
-   That number is an *upper bound* for a fix, never a promise.
+   That number is a *counterfactual estimate* for a fix, never a promise
+   and not a ceiling: a real fix can land below it, or past it.
 
 2. **Causes (evidence, labelled).** Each cause cites the probe or the
    measurement pattern that supports it and carries a confidence:
@@ -62,8 +63,9 @@ def _agentmark_from(rr: Dict[str, float], result) -> Optional[float]:
 def gain_if_fixed(result, reference, bench_ids) -> Dict[str, Optional[float]]:
     """Counterfactual: AgentMark if the given tests matched the reference.
 
-    Tests already faster than the reference are left alone. The result is an
-    upper bound: a real fix rarely reaches reference speed on every test.
+    Tests already faster than the reference are left alone. The result is a
+    counterfactual estimate, not a ceiling: a real fix may reach reference
+    speed, fall short of it, or pass it.
     """
     rr = ratios(result, reference)
     base = _agentmark_from(rr, result)
@@ -116,9 +118,9 @@ MINOR_GAIN_POINTS = 5.0
 def partition_causes(items):
     """Split ranked causes into (major, minor).
 
-    A scored cause whose upper-bound gain is under MINOR_GAIN_POINTS is
+    A scored cause whose estimated gain is under MINOR_GAIN_POINTS is
     minor: real, but not worth a headline card. Causes whose gain is not
-    estimated have no upper bound and stay major.
+    estimated stay major.
     """
     major, minor = [], []
     for c in items:
@@ -524,7 +526,8 @@ def placement(result, reference, others) -> Dict[str, object]:
     share, so the rank never mixes different test subsets."""
     docs = [result, reference] + list(others)
     common = scoring.common_benchmarks(docs)
-    mine = scoring.score(result, reference, restrict=common)["agentmark"]
+    restricted = scoring.score(result, reference, restrict=common)
+    mine = restricted["agentmark"]
     full = scoring.score(result, reference)
     rows = []
     for doc in others:
@@ -537,14 +540,21 @@ def placement(result, reference, others) -> Dict[str, object]:
     rows.sort(key=lambda r: -(r["agentmark"] or 0))
     faster = sum(1 for r in rows if mine and r["agentmark"] and mine > r["agentmark"])
     return {"agentmark": mine, "full_agentmark": full["agentmark"],
-            "coverage": full["coverage"], "common_tests": len(common),
+            # The interval belongs to the restricted point beside it,
+            # never to the full-test score.
+            "agentmark_ci": restricted.get("agentmark_ci"),
+            "ci_kind": restricted.get("ci_kind"),
+            "coverage": full["coverage"],
+            "common_tests": len(restricted.get("compared") or []),
             "references": rows, "faster_than": faster,
             "of": len(rows),
             "note": ("Placement uses {} bundled reference profiles only, scored "
-                     "on the {} tests every profile shares (your full-test "
+                     "on the {} scored tests every profile shares (your full-test "
                      "coverage is {:.0%}). That is too few machines for a "
                      "meaningful percentile, so agentperf reports a rank, "
-                     "not a percentile.".format(len(rows), len(common), full["coverage"]))}
+                     "not a percentile.".format(
+                         len(rows), len(restricted.get("compared") or []),
+                         full["coverage"]))}
 
 
 def verdict(agentmark: Optional[float], os_family: Optional[str] = None) -> str:

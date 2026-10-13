@@ -52,9 +52,12 @@ def _validate_selectors(only: Optional[List[str]], exclude: Optional[List[str]])
 
 LOCK_NAME = ".agentperf-run.lock"
 MARKER_NAME = ".agentperf-owned"
+ARCHIVES_NAME = ".agentperf-archives"
 # Everything agentperf may create or delete inside an owned work directory.
+# The lock is not in this list: cleanup runs while the lock is held and
+# must never remove it (see _clean_owned).
 _OWNED_ENTRIES = ("corpus", "repo", "scratch", "corpus.tar.gz", "empty.gitconfig",
-                  "no-hooks", LOCK_NAME, MARKER_NAME)
+                  "no-hooks", ARCHIVES_NAME, MARKER_NAME)
 
 
 def workdir_owned(workdir: str) -> bool:
@@ -62,15 +65,77 @@ def workdir_owned(workdir: str) -> bool:
 
 
 def _legacy_agentperf_dir(workdir: str) -> bool:
-    """True for a work directory made by agentperf before ownership markers:
-    it holds a corpus manifest that only agentperf writes."""
+    """True for a work directory made by agentperf before ownership markers.
+
+    A JSON file that merely looks like a manifest proves nothing: anyone
+    can write one, and claiming the directory would let a run delete an
+    unrelated ``repo/`` next to it. The corpus must validate in full -
+    every listed file present, re-hashed, matching the recorded fixture
+    hash and byte total - exactly as a cached corpus must to be reused,
+    and the directory must hold nothing outside agentperf's own entries.
+    """
+    try:
+        probe = Corpus(os.path.join(workdir, "corpus"))
+        if not probe._load():
+            return False
+    except Exception:
+        return False
+    import re as _re
+    try:
+        names = os.listdir(workdir)
+    except OSError:
+        return False
+    for name in names:
+        if name in _OWNED_ENTRIES or name == LOCK_NAME:
+            continue
+        if _re.fullmatch(r"corpus-[0-9a-f]{16}\.tar\.gz(?:\.part)?", name):
+            continue
+        return False
+    return True
+
+
+def _record_owned_archive(workdir: str, name: str) -> None:
+    """Record a corpus archive agentperf generated, so cleanup may delete
+    exactly that file later (and no other ``corpus-*.tar.gz``)."""
+    name = os.path.basename(name)
+    try:
+        path = os.path.join(workdir, ARCHIVES_NAME)
+        existing = []
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                existing = [line.strip() for line in fh if line.strip()]
+        if name not in existing:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(name + "\n")
+    except OSError:
+        pass
+
+
+def _owned_archives(workdir: str):
+    """Archive file names agentperf itself generated in *workdir*:
+    the ones it recorded, plus the archive named by the corpus
+    manifest's fixture hash. Any other ``corpus-*.tar.gz`` (a user's
+    backup, say) is not owned and is never deleted."""
     import json as _json
+    import re as _re
+    owned = set()
     try:
         with open(os.path.join(workdir, "corpus", "corpus.json"), encoding="utf-8") as fh:
             data = _json.load(fh)
-        return bool(data.get("fixture_hash")) and "files" in data
+        fixture_hash = str(data.get("fixture_hash") or "")
+        if _re.fullmatch(r"[0-9a-f]{16}", fixture_hash):
+            owned.add("corpus-{}.tar.gz".format(fixture_hash))
     except (OSError, ValueError, AttributeError):
-        return False
+        pass
+    try:
+        with open(os.path.join(workdir, ARCHIVES_NAME), encoding="utf-8") as fh:
+            for line in fh:
+                name = os.path.basename(line.strip())
+                if _re.fullmatch(r"corpus-[0-9a-f]{16}\.tar\.gz", name):
+                    owned.add(name)
+    except OSError:
+        pass
+    return owned
 
 
 def prepare_workdir(workdir: str) -> None:
@@ -101,23 +166,38 @@ def prepare_workdir(workdir: str) -> None:
 
 
 def _clean_owned(workdir: str) -> None:
-    """Remove only agentperf-owned entries, then the directory if it is empty."""
+    """Remove only agentperf-owned entries, while the run lock is held.
+
+    The lock file itself is never removed here: deleting it mid-cleanup
+    would let a second run claim the directory and create files that
+    this cleanup then deletes. Entries go in a fixed order with the
+    ownership marker last; the caller releases the lock afterwards and
+    only then tries to remove the (by then empty) directory, which
+    fails harmlessly if a new run has already claimed it.
+
+    ``corpus-*.tar.gz`` files are deleted only when agentperf recorded
+    generating them (or the corpus manifest names them); an unknown
+    archive is left alone.
+    """
     if not workdir_owned(workdir):
         return
-    for name in os.listdir(workdir):
-        if name in _OWNED_ENTRIES or name.startswith("corpus-") and name.endswith(".tar.gz"):
-            path = os.path.join(workdir, name)
-            if os.path.isdir(path) and not os.path.islink(path):
-                rmtree(path)
-            else:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+    archives = _owned_archives(workdir)  # read before corpus/ is deleted
+    order = [name for name in _OWNED_ENTRIES if name != MARKER_NAME]
+    for name in order + sorted(archives) + [MARKER_NAME]:
+        path = os.path.join(workdir, name)
+        if not os.path.lexists(path):
+            continue
+        if os.path.isdir(path) and not os.path.islink(path):
+            rmtree(path)
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
     try:
         os.rmdir(workdir)
     except OSError:
-        pass  # not empty: something not owned is inside; leave it alone
+        pass  # the lock (or something not owned) is inside; leave it alone
 
 
 def _acquire_lock(workdir: str) -> str:
@@ -159,10 +239,20 @@ def run_suite(workdir: str, profile: str = "standard", label: Optional[str] = No
             rmtree(os.path.join(workdir, "scratch"))
         except Exception:
             pass
+        # The lock is released last: every deletion above happened while
+        # it was held, so no following run could create files in between.
         try:
             os.remove(lock)
         except OSError:
             pass
+        if clean:
+            # Remove the directory only if it is now empty. If a new run
+            # has already claimed it (marker or lock present), rmdir
+            # fails and the new run's files are untouched.
+            try:
+                os.rmdir(workdir)
+            except OSError:
+                pass
 
 
 def _run_locked(workdir: str, profile: str, label: Optional[str],
@@ -269,5 +359,16 @@ def _run_locked(workdir: str, profile: str, label: Optional[str],
         "skipped": skipped,
     }
     from . import scoring
+    from .util import NODE_ENV_REMOVED, SHELL_ENV_REMOVED
+    # The environment policy is measurement metadata, recorded outside
+    # the scored-definition fingerprint: on a machine where none of
+    # these variables is set, a sanitized launch does the same work as
+    # an unsanitized one, so suite 0.3.0 results stay comparable.
+    doc["measurement_env"] = {
+        "shell_launch": "sanitized (removed: {})".format(", ".join(SHELL_ENV_REMOVED)),
+        "node_spawn_diagnostic": "sanitized (removed: {})".format(
+            ", ".join(SHELL_ENV_REMOVED + NODE_ENV_REMOVED)),
+    }
+    doc["scoring_config"] = scoring.scoring_config_snapshot()
     doc["fingerprint"] = scoring.fingerprint(doc)
     return doc

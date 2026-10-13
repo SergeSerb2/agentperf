@@ -3317,7 +3317,7 @@
  "reference_profile": {
   "name": "wsl2-i7-12700k",
   "measured": "2026-10",
-  "description": "Desktop i7-12700K, Ubuntu in WSL2, ext4 on NVMe. The AgentMark anchor. Median of 3 runs.",
+  "description": "Desktop i7-12700K, Ubuntu in WSL2, ext4 on NVMe. The AgentMark anchor. Combined from 3 runs (per-test median of run medians).",
   "anonymized": true
  }
 }

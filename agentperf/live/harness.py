@@ -68,33 +68,69 @@ def display_command(cmd):
     return shlex.join(cmd)
 
 
-def _kill_tree(proc):
+def _group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _kill_tree(proc, grace_s=3.0):
     """Terminate the whole process tree, then reap the direct child.
 
     Killing only the CLI would leave its tool subprocesses running while
-    verification and cleanup proceed on the same files."""
-    try:
-        if os.name == "nt":
+    verification and cleanup proceed on the same files. The parent may
+    already have exited (its tool subprocesses outlive it), so on POSIX
+    the process group is the unit of escalation: the harness runs in
+    its own session, so the group id equals the parent pid even after
+    the parent dies. A descendant that ignores SIGTERM gets SIGKILL as
+    soon as the grace period ends, whether the parent is alive or not.
+    """
+    if os.name == "nt":
+        try:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-        else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError):
+            pass
         try:
             proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            pass
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = proc.pid  # session leader: group id is its pid
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except OSError:
+        pass
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline and _group_alive(pgid):
+        if proc.poll() is not None and not _group_alive(pgid):
+            break
+        time.sleep(0.05)
+    if _group_alive(pgid):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
         except OSError:
             pass
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         try:
-            if os.name != "nt":
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            else:
-                proc.kill()
+            proc.kill()
         except OSError:
             pass
-        proc.wait()
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            pass
 
 
 def run_streamed(harness, cmd, prompt, cwd, timeout):

@@ -3524,7 +3524,7 @@
  "reference_profile": {
   "name": "windows-i7-12700k",
   "measured": "2026-10",
-  "description": "Same desktop as the reference, native Windows 11 as-is: third-party real-time antivirus and search indexing active, shell commands through Git Bash. Median of 3 runs.",
+  "description": "Same desktop as the reference, native Windows 11 as-is: third-party real-time antivirus and search indexing active, shell commands through Git Bash. Combined from 3 runs (per-test median of run medians).",
   "anonymized": true
  }
 }

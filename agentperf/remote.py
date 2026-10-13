@@ -205,6 +205,18 @@ def _subcommand(args, label: str, remote_out: str) -> List[str]:
     return sub
 
 
+def _valid_fetched(doc, label: str, mode: str = "run") -> bool:
+    """A fetched file is this run's result only when it is a result
+    object (not a list, string, or number) with the expected label and
+    the fields its mode writes: a benchmarks object for a suite run, a
+    runs list for live. Anything else is a clean invalid result."""
+    if not isinstance(doc, dict) or doc.get("label") != label:
+        return False
+    if mode == "live":
+        return isinstance(doc.get("runs"), list)
+    return isinstance(doc.get("benchmarks"), dict)
+
+
 def _run_one(host: str, wsl: Optional[str], label: str, args, pyz: str,
              say) -> Dict[str, object]:
     """Copy, run, and fetch for one target. Raises SystemExit on setup failure."""
@@ -255,9 +267,10 @@ def _run_one(host: str, wsl: Optional[str], label: str, args, pyz: str,
         try:
             with open(local, encoding="utf-8") as fh:
                 doc = json.load(fh)
-            if doc.get("label") != label:
-                say("fetched result label {!r} does not match {!r}; refusing it".format(
-                    doc.get("label"), label))
+            if not _valid_fetched(doc, label, mode):
+                shown = doc.get("label") if isinstance(doc, dict) else type(doc).__name__
+                say("fetched result is not a valid result for {!r} (got {!r}); "
+                    "refusing it".format(label, shown))
                 fetched = False
         except (OSError, ValueError) as exc:
             say("fetched result is not valid JSON: {}".format(exc))

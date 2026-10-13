@@ -40,8 +40,11 @@ class Machine:
         self.lw = scoring.lw100(doc, common)
         self.range = None
         if estimated and low and high:
-            lo = scoring.score(low, reference, category_weights=category_weights)["agentmark"]
-            hi = scoring.score(high, reference, category_weights=category_weights)["agentmark"]
+            # Same restriction as the point the range is drawn around.
+            lo = scoring.score(low, reference, restrict=common,
+                               category_weights=category_weights)["agentmark"]
+            hi = scoring.score(high, reference, restrict=common,
+                               category_weights=category_weights)["agentmark"]
             self.range = (min(lo, hi), max(lo, hi))
         elif self.score.get("agentmark_ci"):
             self.range = tuple(self.score["agentmark_ci"])
@@ -363,13 +366,17 @@ def write_html(results, reference, path: str, estimates: Optional[str] = None, t
         lw_txt = "{:.1f} s".format(m.lw["seconds"]) if m.lw["seconds"] is not None else "not available"
         warn_txt = ('<div class="muted small">Comparability: {}</div>'.format(esc("; ".join(m.warnings)))
                     if m.warnings else "")
+        lw_parts = (" ({} of {} parts)".format(
+            len(m.lw["lines"]), len(m.lw["lines"]) + len(m.lw["missing"]))
+            if m.lw["missing"] else "")
         tiles.append('<div class="tile{}"><div class="tile-label">{}{}</div><div class="tile-value">{}</div>'
-                     '<div class="muted small">{} {}</div><div class="muted small">on {} common tests · coverage {:.0%}</div>'
-                     '<div class="muted small">LW100 {} · Reach {}</div>{}</div>'.format(
+                     '<div class="muted small">{} {}</div><div class="muted small">on {} scored common tests · coverage {:.0%}</div>'
+                     '<div class="muted small">LW100 {}{} · Reach {}</div>{}</div>'.format(
                          " est" if m.estimated else "", esc(m.label),
                          ' <span class="badge">estimate</span>' if m.estimated else "",
-                         fmt_num(m.shown["agentmark"]), kind, rng_txt, len(common), m.score["coverage"],
-                         lw_txt, fmt_num(m.shown.get("reach")), warn_txt))
+                         fmt_num(m.shown["agentmark"]), kind, rng_txt,
+                         len(m.shown.get("compared") or []), m.score["coverage"],
+                         lw_txt, lw_parts, fmt_num(m.shown.get("reach")), warn_txt))
 
     am_rows = [(m.label, m.shown["agentmark"], m.short_system, m.estimated, m.range,
                 "{}: AgentMark {} on common tests ({}; full-set {}, coverage {:.0%})".format(
@@ -392,8 +399,12 @@ def write_html(results, reference, path: str, estimates: Optional[str] = None, t
     compat = "".join(
         '<p class="lede"><b>Comparability ({}):</b> {}</p>'.format(esc(m.label), esc(w))
         for m in machines for w in m.warnings)
+    scored_common = (set.intersection(*[set(m.shown.get("compared") or [])
+                                         for m in machines])
+                     if machines else set())
     compat += ('<p class="lede">Scores above use the {} scored tests every machine ran. '
-               'Coverage says how much of the reference weight each machine scored.</p>').format(len(common))
+               'Coverage says how much of the reference weight each machine scored.</p>').format(
+                   len(scored_common))
     data_json = json.dumps({"reference": reference["label"],
                             "machines": [{"label": m.label, "estimated": m.estimated,
                                           "agentmark": m.shown["agentmark"], "reach": m.shown.get("reach"),
@@ -571,9 +582,9 @@ def _cause_cards(result, reference) -> str:
     cards = []
     for i, c in enumerate(major, 1):
         if c.get("gain_estimated") and c["gain_points"]:
-            gain = ('<div class="gain">up to +{} AgentMark</div>'
-                    '<div class="muted small">if the affected tests reached reference speed '
-                    '(upper bound; gains overlap and do not add up)</div>').format(
+            gain = ('<div class="gain">about +{} AgentMark</div>'
+                    '<div class="muted small">estimated, if the affected tests reached reference speed '
+                    '(gains overlap and do not add up)</div>').format(
                         fmt_gain(c["gain_points"]))
         else:
             gain = '<div class="muted small">Gain not estimated.</div>'
@@ -593,7 +604,7 @@ def _cause_cards(result, reference) -> str:
         out += ('<section><p>No large win stands out. The minor items below are each worth '
                 'under +{} AgentMark.</p></section>').format(fmt_gain(diagnose.MINOR_GAIN_POINTS))
     if minor:
-        rows = "".join('<li><b>{}</b> <span class="conf {}">{}</span> - up to +{} AgentMark. {}</li>'.format(
+        rows = "".join('<li><b>{}</b> <span class="conf {}">{}</span> - about +{} AgentMark at reference speed. {}</li>'.format(
             esc(c["topic"]), esc(c["confidence"]), esc(c["confidence"]),
             fmt_gain(c["gain_points"]), esc(c["fix"][0]) if c["fix"] else "") for c in minor)
         out += ('<section><details><summary>Minor wins ({} item(s), each under +{} AgentMark)</summary>'
@@ -629,7 +640,7 @@ def _attribution_sections(result, reference) -> str:
         if block["weight"]:
             head += ' <span class="muted small">weight {:.0f} of 100</span>'.format(block["weight"])
         if block["gain_points"]:
-            head += (' <span class="muted small">matching the reference here is worth up to '
+            head += (' <span class="muted small">matching the reference here is worth about '
                      '+{} AgentMark</span>').format(fmt_gain(block["gain_points"]))
         out.append('<h3>{}</h3><section><table class="attr">{}</table></section>'.format(
             head, "".join(rows)))
@@ -682,9 +693,10 @@ def write_report(result, reference, path: str, references=None, title=None) -> N
         return label if len(label) <= 30 else label[:29] + "..."
 
     # Placement scores are restricted to the tests every profile shares,
-    # so the "you" bar uses the same basis as the profile bars.
+    # so the "you" bar uses the same basis as the profile bars - and its
+    # interval comes from that same restricted score, not the full one.
     rows = [(short(result["label"] + " (you)"), place["agentmark"], machine.short_system, False,
-             tuple(sc["agentmark_ci"]) if sc.get("agentmark_ci") else None,
+             tuple(place["agentmark_ci"]) if place.get("agentmark_ci") else None,
              "Your machine: AgentMark {} on the shared tests ({} on all your tests)".format(
                  fmt_num(place["agentmark"]), fmt_num(sc["agentmark"])))]
     for r in place["references"]:
@@ -716,7 +728,7 @@ def write_report(result, reference, path: str, references=None, title=None) -> N
             esc(lw_value), esc(lw_sub),
             fmt_num(sc.get("reach")), sc["coverage"])
     drags = diagnose.attribution(result, reference)["biggest_drags"]
-    drag_items = "".join('<li><code>{}</code> x{} vs reference - worth up to +{} AgentMark</li>'.format(
+    drag_items = "".join('<li><code>{}</code> x{} vs reference - about +{} AgentMark if it matched the reference</li>'.format(
         esc(t["id"]), fmt_ratio(t["ratio"]), fmt_gain(t["gain_points"])) for t in drags[:5]) or "<li>None: no test trails the reference.</li>"
     comparable = esc("suite {} - schema {} - corpus {} - reference '{}'".format(
         result.get("suite_version", SUITE_VERSION), result.get("schema", "?"),
@@ -728,7 +740,7 @@ def write_report(result, reference, path: str, references=None, title=None) -> N
 <h1>%%TITLE%%</h1>
 <p class="lede">%%VERDICT%% 1000 = the reference (<b>%%REF%%</b>); 2000 means twice as fast.
 Causes are labelled <b>observed</b> (a probe shows it), <b>likely</b> (probe plus matching pattern),
-or <b>possible</b> (pattern only). Gains are upper bounds and overlap.
+or <b>possible</b> (pattern only). Gains are estimates at reference speed, and they overlap.
 <span class="muted">agentperf %%VERSION%% - %%DATE%% - %%COMPARABLE%%</span></p>
 %%COMPAT%%
 <div class="tiles">%%TILES%%</div>

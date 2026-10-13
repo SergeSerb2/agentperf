@@ -18,7 +18,7 @@ import urllib.request
 import zipfile
 from typing import Dict, List, Optional
 
-from .util import IS_MAC, IS_WINDOWS, IS_WSL, run_text, which
+from .util import IS_MAC, IS_WINDOWS, IS_WSL, run, run_text, which  # noqa: F401
 
 RG_VERSION = "15.2.0"
 RG_ASSETS = {
@@ -91,10 +91,15 @@ def pinned_node_path() -> str:
 
 def _cached_ok(target: str) -> bool:
     """A cached tool must actually run; a partial file from an interrupted
-    extraction is not a tool."""
+    extraction is not a tool. The exit status decides: a binary that
+    prints something and then fails is not a working tool either."""
     if not os.path.exists(target):
         return False
-    return bool(run_text([target, "--version"], timeout=15))
+    try:
+        proc = run([target, "--version"], timeout=15)
+    except Exception:
+        return False
+    return proc.returncode == 0 and bool((proc.stdout or b"").strip())
 
 
 def _fetch_binary(target: str, assets: Dict[str, tuple], url_fmt: str, version: str,

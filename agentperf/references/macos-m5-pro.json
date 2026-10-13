@@ -3618,7 +3618,7 @@
  "reference_profile": {
   "name": "macos-m5-pro",
   "measured": "2026-10",
-  "description": "MacBook Pro, Apple M5 Pro, measured on battery under heavy background load (a backup running and a system daemon near 100% CPU). Median of 3 runs. A lower bound for the hardware, not its idle speed.",
+  "description": "MacBook Pro, Apple M5 Pro, measured on battery under heavy background load (a backup running and a system daemon near 100% CPU). Combined from 3 runs (per-test median of run medians). A lower bound for the hardware, not its idle speed.",
   "anonymized": true
  }
 }

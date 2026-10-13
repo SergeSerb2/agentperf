@@ -19,7 +19,7 @@ Rough reading of AgentMark:
 
 - A single run varies by about 10 to 15%. Treat differences under about 15% as a tie.
 - `agentmark_ci` is a 90% interval. For one run it covers within-run spread only. Between runs, the spread is larger. `ci_kind` says which interval you have.
-- For a number the user will act on, use `--runs 3`. The combined result keeps the median of the run medians.
+- For a number the user will act on, use `--runs 3`. The combined result keeps, per test, the median of that test's run medians, and scores that. It is not the median of the whole-run scores.
 - Rank several machines on `agentmark_common` from a compare summary. It uses only the tests every machine ran. The plain `agentmark` can rest on different test sets.
 - `coverage` says how much of the reference's test weight the machine scored. Low coverage means tests skipped. A score with low coverage is a partial answer. Say which tests skipped and why (`skipped` in the summary).
 
@@ -39,7 +39,7 @@ Each cause carries a confidence:
 
 Keep that word when you report the cause. Do not upgrade "possible" to fact.
 
-A gain such as "up to +90" means: if the affected tests reached reference speed, the score would rise by about that much. It is an upper bound. Real fixes land below it. Gains overlap, so they do not add up. When `gain_estimated` is false, say the gain is not estimated. Do not invent one.
+A gain such as "about +90 at reference speed" means: if the affected tests reached reference speed, the score would rise by about that much. It is a counterfactual estimate, not a ceiling and not a promise; a real fix can land below it or past it. Gains overlap, so they do not add up. When `gain_estimated` is false, say the gain is not estimated. Do not invent one.
 
 ## What never to claim
 

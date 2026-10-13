@@ -3510,7 +3510,7 @@
  "reference_profile": {
   "name": "macos-m1-pro",
   "measured": "2026-10",
-  "description": "MacBook Pro, Apple M1 Pro, APFS. Median of 3 runs.",
+  "description": "MacBook Pro, Apple M1 Pro, APFS. Combined from 3 runs (per-test median of run medians).",
   "anonymized": true
  }
 }

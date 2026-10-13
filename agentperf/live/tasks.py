@@ -66,50 +66,109 @@ if __name__ == "__main__":
 FIXTURE_TEST_COUNT = 8
 HIDDEN_TEST_COUNT = 5
 
+# Verification runs the agent's code, so nothing it prints can be
+# trusted: a test that prints "Ran 99 tests" must not set the count.
+# This wrapper lives outside the repo, imports the real unittest before
+# the repo joins sys.path (appended, and only after the stdlib import),
+# runs the suite through the programmatic API, and writes the count to
+# a JSON file the verifier reads. It is launched with `python -I`, so
+# an inherited PYTHONPATH (and any shadow `unittest` module on it) is
+# ignored entirely.
+_RUNNER = '''import json
+import sys
+import unittest
 
-def _ran_count(out):
-    m = re.search(r"Ran (\d+) test", out or "")
-    return int(m.group(1)) if m else 0
+mode, repo, result_path = sys.argv[1], sys.argv[2], sys.argv[3]
+hidden = sys.argv[4] if len(sys.argv) > 4 else ""
+sys.argv = [sys.argv[0]]
+sys.path = [p for p in sys.path if p not in ("", ".")]
+if repo not in sys.path:
+    sys.path.append(repo)
+loader = unittest.TestLoader()
+if mode == "hidden":
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("agentperf_hidden", hidden)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    suite = loader.loadTestsFromModule(module)
+else:
+    suite = loader.discover(start_dir=repo + "/tests", top_level_dir=repo)
+import io
+stream = io.StringIO()
+result = unittest.TextTestRunner(stream=stream, verbosity=1).run(suite)
+with open(result_path, "w", encoding="utf-8") as fh:
+    json.dump({"ran": result.testsRun, "ok": result.wasSuccessful(),
+               "tail": stream.getvalue()[-400:]}, fh)
+'''
+
+
+def _run_suite(repo, mode, timeout, hidden_path=""):
+    """Run a suite via the outside-repo wrapper; return (ran, ok, tail).
+
+    Counts come from the wrapper's JSON result file, never from text
+    the tested code printed.
+    """
+    tmpdir = tempfile.mkdtemp(prefix="agentperf-verify-")
+    wrapper = os.path.join(tmpdir, "run_suite.py")
+    result_path = os.path.join(tmpdir, "result.json")
+    try:
+        with open(wrapper, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(_RUNNER)
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME")}
+        argv = [sys.executable, "-I", wrapper, mode, os.path.abspath(repo),
+                result_path]
+        if hidden_path:
+            argv.append(hidden_path)
+        proc = subprocess.run(
+            argv, cwd=tmpdir, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+            timeout=timeout)
+        try:
+            import json as _json
+            with open(result_path, encoding="utf-8") as fh:
+                data = _json.load(fh)
+            return int(data["ran"]), bool(data["ok"]), str(data.get("tail") or "")
+        except (OSError, ValueError, KeyError, TypeError):
+            tail = (proc.stdout or "").strip().splitlines()
+            return 0, False, (tail[-1] if tail else "verifier produced no result")
+    finally:
+        for name in ("run_suite.py", "result.json"):
+            try:
+                os.remove(os.path.join(tmpdir, name))
+            except OSError:
+                pass
+        try:
+            os.rmdir(tmpdir)
+        except OSError:
+            pass
 
 
 def _run_tests(repo, timeout=120, min_tests=FIXTURE_TEST_COUNT):
-    proc = subprocess.run(
-        [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."],
-        cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        encoding="utf-8", errors="replace", timeout=timeout)
-    out = proc.stdout or ""
-    tail = out.strip().splitlines()
-    detail = tail[-1] if tail else ""
-    ran = _ran_count(out)
-    if proc.returncode == 0 and ran < min_tests:
+    ran, ok, tail = _run_suite(repo, "discover", timeout)
+    detail = tail.strip().splitlines()[-1] if tail.strip() else ""
+    if ok and ran < min_tests:
         return False, "only {} of at least {} expected tests ran".format(ran, min_tests)
-    return proc.returncode == 0, detail
+    return ok, detail
 
 
 def _run_hidden(repo, timeout=120):
     """Run the hidden tests from outside the repo's tests package.
 
-    The agent controls the repo, including unittest discovery hooks there.
-    The hidden file lives in a fresh temp directory and runs as a plain
-    script, importing only the package under test."""
+    The agent controls the repo, including unittest discovery hooks and
+    any module that could shadow the stdlib. The hidden file lives in a
+    fresh temp directory and runs through the isolated wrapper above,
+    importing only the package under test."""
     tmpdir = tempfile.mkdtemp(prefix="agentperf-hidden-")
     hidden = os.path.join(tmpdir, "test_hidden_clamp.py")
     try:
         with open(hidden, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(_HIDDEN_TEST)
-        env = dict(os.environ)
-        env["PYTHONPATH"] = repo + os.pathsep + env.get("PYTHONPATH", "")
-        proc = subprocess.run(
-            [sys.executable, hidden], cwd=repo, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            encoding="utf-8", errors="replace", timeout=timeout)
-        out = proc.stdout or ""
-        ran = _ran_count(out)
-        tail = out.strip().splitlines()
-        detail = tail[-1] if tail else ""
-        if proc.returncode == 0 and ran != HIDDEN_TEST_COUNT:
+        ran, ok, tail = _run_suite(repo, "hidden", timeout, hidden)
+        detail = tail.strip().splitlines()[-1] if tail.strip() else ""
+        if ok and ran != HIDDEN_TEST_COUNT:
             return False, "hidden suite ran {} tests, expected {}".format(ran, HIDDEN_TEST_COUNT)
-        return proc.returncode == 0, detail
+        return ok, detail
     finally:
         try:
             os.remove(hidden)

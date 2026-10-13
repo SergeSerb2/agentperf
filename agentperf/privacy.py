@@ -28,19 +28,25 @@ _DROP_SYSTEM = ("hostname", "workdir", "cwd", "top_processes", "physical_disks",
 _HOME_CAPTURE = [
     re.compile(r"/Users/([^/\"'\\\s]+)"),
     re.compile(r"/home/([^/\"'\\\s]+)"),
-    re.compile(r"[A-Za-z]:\\Users\\([^\\\"'\s]+)"),
+    # A Windows user folder can itself contain spaces ("Alice Smith").
+    re.compile(r"[A-Za-z]:\\Users\\([^\\\"'\n]+?)(?:\\|$)"),
     re.compile(r"[A-Za-z]:/Users/([^/\"'\s]+)"),
 ]
 # Home paths: the subpath under a home directory is private too (client
 # names, project names), so the whole path token is generalized. Volume
-# names under /Volumes can name clients or projects as well.
+# names under /Volumes can name clients or projects as well. Path
+# segments may contain spaces ("/Volumes/Client Merger Documents",
+# r"C:\Users\Alice Smith\..."), so these patterns must not stop at a
+# space inside a path. They run to the next quote or line end instead,
+# which can over-scrub words that follow a path in free text; for a
+# privacy filter that is the safe direction.
 _HOME_RE = [
-    (re.compile(r"/Users/[^/\"'\\\s]+(?:/[^\s\"':]*)?"), "/Users/<user>"),
-    (re.compile(r"/home/[^/\"'\\\s]+(?:/[^\s\"':]*)?"), "/home/<user>"),
+    (re.compile(r"/Users/[^/\"'\\\s]+(?:/[^\n\"']*)?"), "/Users/<user>"),
+    (re.compile(r"/home/[^/\"'\\\s]+(?:/[^\n\"']*)?"), "/home/<user>"),
     (re.compile(r"/Volumes/[^\n\":]+:"), "/Volumes/<volume>:"),
-    (re.compile(r"/Volumes/[^/\s\"':]+(?:/[^\s\"':]*)?"), "/Volumes/<volume>"),
-    (re.compile(r"[A-Za-z]:\\Users\\[^\\\"'\s]+(?:\\[^\s\"']*)?"), r"C:\Users\<user>"),
-    (re.compile(r"[A-Za-z]:/Users/[^/\"'\s]+(?:/[^\s\"']*)?"), "C:/Users/<user>"),
+    (re.compile(r"/Volumes/[^\n\"']+"), "/Volumes/<volume>"),
+    (re.compile(r"[A-Za-z]:\\Users\\[^\n\"']+"), r"C:\Users\<user>"),
+    (re.compile(r"[A-Za-z]:/Users/[^/\"'\s]+(?:/[^\n\"']*)?"), "C:/Users/<user>"),
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
     (re.compile(r"\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b"), "<mac>"),
     (re.compile(r"\b[\w.-]+\.ts\.net\b"), "<host>"),
@@ -76,6 +82,10 @@ def _candidate_names(doc) -> List[str]:
         name = (name or "").strip()
         if len(name) >= 3 and name.lower() not in _NOT_NAMES and name not in names:
             names.append(name)
+        # A captured "Alice Smith" also makes bare "Smith" identifying.
+        for part in name.split():
+            if len(part) >= 3 and part.lower() not in _NOT_NAMES and part not in names:
+                names.append(part)
 
     def walk(node):
         if isinstance(node, dict):
@@ -204,4 +214,13 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         changes.append("scrubbed {} private string(s) (home paths, IP/MAC addresses, "
                        "user/host names) in kept fields".format(counter[0]))
     out["anonymized"] = True
+    # Scrubbing can change strings the fingerprint covers (methods,
+    # titles); regenerate it under the recorded config so the shared
+    # file's fingerprint still matches its contents.
+    if out.get("fingerprint") and out.get("benchmarks"):
+        from . import scoring
+        fresh = scoring.fingerprint(out)
+        if fresh != out["fingerprint"]:
+            out["fingerprint"] = fresh
+            changes.append("measurement/scoring fingerprint regenerated for the scrubbed copy")
     return out, changes

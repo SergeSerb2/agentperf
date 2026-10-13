@@ -170,6 +170,37 @@ class Corpus:
         self.fixture_hash = data["fixture_hash"]
         return True
 
+    def expected_search_counts(self) -> dict:
+        """Search answers derived from the corpus files themselves.
+
+        Counted by reading the verified corpus with Python, never by
+        asking the tool under test: a search tool that silently searches
+        less (a stray ignore file, a different root) must fail against
+        these numbers, not set them. Untimed; the result is cached on
+        the instance because the corpus does not change during a run.
+        """
+        cached = getattr(self, "_search_counts", None)
+        if cached is not None:
+            return cached
+        import re as _re
+        regex = _re.compile(REGEX)
+        needle = NEEDLE.encode("ascii")
+        counts = {"needle_files": 0, "needle_lines": 0, "regex_lines": 0}
+        for rel in self.files:
+            with open(self.path(rel), "rb") as fh:
+                data = fh.read()
+            file_hits = 0
+            for line in data.splitlines():
+                if needle in line:
+                    counts["needle_lines"] += 1
+                    file_hits += 1
+                if regex.search(line.decode("ascii", "replace")):
+                    counts["regex_lines"] += 1
+            if file_hits:
+                counts["needle_files"] += 1
+        self._search_counts = counts
+        return counts
+
     def path(self, rel: str) -> str:
         return os.path.join(self.tree, *rel.split("/"))
 

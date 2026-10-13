@@ -76,6 +76,27 @@ def run(argv: Sequence[str], cwd: Optional[str] = None, env: Optional[Dict[str, 
     )
 
 
+# Shell-startup variables a scored launch must never honour. bash reads
+# BASH_ENV for non-interactive shells even with --noprofile --norc, and
+# sh/ksh read ENV, so an inherited value would time the user's startup
+# scripts instead of the shell start. SHELLOPTS/BASHOPTS can also be
+# imported from the environment. They are removed, never replaced.
+SHELL_ENV_REMOVED = ("BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS")
+NODE_ENV_REMOVED = ("NODE_OPTIONS",)
+
+
+def shell_env(base: Optional[Dict[str, str]] = None, node: bool = False) -> Dict[str, str]:
+    """A copy of *base* (default: this process's environment) with the
+    shell-startup overrides removed. Scored shell launches and the Node
+    spawn diagnostic run with this environment; everything else (PATH,
+    locale, temp dirs) is inherited unchanged, so a machine where none of
+    these variables is set does exactly the same work as before."""
+    env = dict(os.environ if base is None else base)
+    for key in SHELL_ENV_REMOVED + (NODE_ENV_REMOVED if node else ()):
+        env.pop(key, None)
+    return env
+
+
 def run_text(argv: Sequence[str], timeout: float = 20.0, **kw) -> str:
     """Best-effort command output as text. Returns '' on any failure."""
     try:
@@ -179,7 +200,7 @@ def fmt_num(value: Optional[float], digits: int = 3) -> str:
 
 
 def fmt_gain(value: Optional[float]) -> str:
-    """AgentMark gains are upper bounds; whole numbers only, never +94.0."""
+    """AgentMark gains are counterfactual estimates; whole numbers only."""
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return "-"
     return "{:,.0f}".format(round(float(value)))
@@ -210,12 +231,14 @@ def version_tuple(text) -> tuple:
     return tuple(out)
 
 
-def buffered_copy(src: str, dst: str, bufsize: int = 4 * 1024 * 1024) -> None:
+def buffered_copy(src: str, dst: str, bufsize: int = 4 * 1024 * 1024) -> int:
     """Copy by explicit read/write, so bytes really move on every platform.
 
     ``shutil`` fast paths can turn a copy into a metadata clone (reflink via
     ``copy_file_range`` on some filesystems). Scored copies must not do that.
+    Returns the number of bytes copied.
     """
+    total = 0
     sfd = os.open(src, os.O_RDONLY | getattr(os, "O_BINARY", 0))
     try:
         dfd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o644)
@@ -224,6 +247,7 @@ def buffered_copy(src: str, dst: str, bufsize: int = 4 * 1024 * 1024) -> None:
                 data = os.read(sfd, bufsize)
                 if not data:
                     break
+                total += len(data)
                 view = memoryview(data)
                 while view:
                     written = os.write(dfd, view)
@@ -232,18 +256,36 @@ def buffered_copy(src: str, dst: str, bufsize: int = 4 * 1024 * 1024) -> None:
             os.close(dfd)
     finally:
         os.close(sfd)
+    return total
 
 
-def copy_tree_buffered(src: str, dst: str) -> None:
-    """Copy a directory tree with buffered_copy for every file."""
+def copy_tree_buffered(src: str, dst: str):
+    """Copy a directory tree with buffered_copy for every file.
+
+    Returns (file count, byte count) actually copied, so callers can
+    verify the copy outside timing. A missing or unreadable source is an
+    error: ``os.walk`` would otherwise skip it silently and the caller
+    would credit a copy that never happened.
+    """
+    if not os.path.isdir(src):
+        raise FileNotFoundError("copy source is not a directory: " + src)
+
+    def _raise(exc):
+        raise exc
+
     os.makedirs(dst)
-    for root, dirs, files in os.walk(src):
+    files_done = 0
+    bytes_done = 0
+    for root, dirs, files in os.walk(src, onerror=_raise):
         rel = os.path.relpath(root, src)
         target_root = dst if rel == "." else os.path.join(dst, rel)
         for name in dirs:
             os.makedirs(os.path.join(target_root, name), exist_ok=True)
         for name in files:
-            buffered_copy(os.path.join(root, name), os.path.join(target_root, name))
+            bytes_done += buffered_copy(os.path.join(root, name),
+                                        os.path.join(target_root, name))
+            files_done += 1
+    return files_done, bytes_done
 
 
 def fmt_bytes(n: float) -> str:

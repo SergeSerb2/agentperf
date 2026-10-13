@@ -76,7 +76,7 @@ Read [references/reading-results.md](references/reading-results.md). The short r
 
 - AgentMark 1000 is the reference machine. 500 is about half as fast at local agent work.
 - Differences under about 15% are not meaningful. Single runs vary.
-- Gains are upper bounds. They overlap and do not add up.
+- Gains are counterfactual estimates at reference speed. They overlap and do not add up.
 - If `comparability_warnings` is not empty, say so. Do not rank machines as if the warning were absent.
 - Never claim a percentile. There are too few reference machines.
 
