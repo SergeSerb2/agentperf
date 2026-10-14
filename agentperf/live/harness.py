@@ -139,6 +139,12 @@ def _kill_tree(proc, grace_s=3.0):
             os.killpg(pgid, signal.SIGKILL)
         except OSError:
             pass
+        # SIGKILL cannot be ignored, but death is not instantaneous:
+        # give the group a short window to actually disappear (zombies
+        # reaped by init included) before callers verify or delete.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and _group_alive(pgid):
+            time.sleep(0.05)
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:

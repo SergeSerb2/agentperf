@@ -328,8 +328,15 @@ class LiveRound7Test(_Tmp):
         with open(pidfile) as fh:
             pid = int(fh.read().strip())
         try:
-            with self.assertRaises(OSError):
-                os.kill(pid, 0)
+            import time
+            for _i in range(200):
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("probe descendant survived cleanup")
         finally:
             try:
                 os.kill(pid, 9)
@@ -354,8 +361,17 @@ class LiveRound7Test(_Tmp):
             child_pid = int(fh.read().strip())
         try:
             self.assertEqual(result["exit_code"], 0)
-            with self.assertRaises(OSError):
-                os.kill(child_pid, 0)
+            # Death after SIGKILL is prompt but not instantaneous;
+            # poll briefly like the round-6 C15 test does.
+            import time
+            for _i in range(200):
+                try:
+                    os.kill(child_pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("descendant survived run_streamed cleanup")
         finally:
             try:
                 os.kill(child_pid, 9)
