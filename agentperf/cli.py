@@ -446,14 +446,26 @@ def _check_combinable(docs, what: str) -> None:
             or (d.get("tool_versions") or {}).get("bash") for d in docs])),
         ("recorded scoring config", distinct([
             repr(sorted(scoring._weights_for(d).items())) for d in docs])),
-        ("shell environment policy", distinct([
-            scoring.shell_env_policy(d) for d in docs])),
     ]
     for name, values in checks:
         if len(values) > 1:
             raise ValueError("these results have different {}s ({}); refusing to {} "
                              "incompatible measurements".format(
                                  name, ", ".join(str(v) for v in values), what))
+    # Shell policies are compared per scored shell benchmark, like
+    # compatibility_warnings: a document-level value would let one
+    # benchmark's policy (or an unrelated measurement_env field) mask
+    # another benchmark's mismatch. A benchmark absent from a file
+    # (a separate network pass) does not vote.
+    for bid in scoring.SHELL_BENCHMARKS:
+        policies = distinct([scoring.shell_env_policies(d).get(bid)
+                              for d in docs])
+        if len(policies) > 1:
+            raise ValueError("these results have different shell environment "
+                             "policies for {} ({}); refusing to {} "
+                             "incompatible measurements".format(
+                                 bid, ", ".join(str(v) for v in policies),
+                                 what))
     seen = {}
     for doc in docs:
         for bid, entry in (doc.get("benchmarks") or {}).items():

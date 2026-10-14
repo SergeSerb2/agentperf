@@ -384,8 +384,14 @@ class RemoteOrchestrationTest(unittest.TestCase):
 
     def _doc(self, label):
         # Round 7: an empty benchmarks object is not a successful fetch.
+        # Round 8 (F7): a fetched run must pass full result validation,
+        # so the fake fetched entry carries the whole entry shape.
+        entry = {"category": "process", "title": "process", "unit": "ms",
+                 "lower_is_better": True, "weight": 1.0, "scored": True,
+                 "ops": 1, "median": 1.0, "samples": [1.0], "cv": 0.0,
+                 "noisy": False, "meta": {}}
         return {"label": label,
-                "benchmarks": {"process.shell": {"median": 1.0}},
+                "benchmarks": {"process.shell": entry},
                 "skipped": {}, "system": {},
                 "schema": 1, "corpus": {"fixture_hash": "h"}}
 

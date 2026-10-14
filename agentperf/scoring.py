@@ -43,36 +43,106 @@ def _finite_number(value) -> bool:
 def validate_result(doc, source: str = "result") -> Dict[str, object]:
     """Check a result document's shape before any code trusts it.
 
-    Every benchmark entry needs a finite numeric median; malformed
-    entries (lists, nulls, NaN, strings) are bad input with a clear
-    message, never an AttributeError deep in scoring. Fields agents
-    read as objects must be objects when present."""
+    Every benchmark entry needs the fields scoring and reporting read
+    (category, weight, median, samples, direction, scored flag), each
+    of the right type; malformed entries (lists, nulls, NaN, strings)
+    are bad input with a clear message, never an AttributeError or
+    TypeError deep in scoring. Fields agents read as objects must be
+    objects when present, nulls included: a present-but-null field is
+    malformed, not absent."""
+
+    def bad(message):
+        raise ValueError("{} in {}".format(message, source))
+
     if not isinstance(doc, dict) or not isinstance(doc.get("benchmarks"), dict):
         raise ValueError(
             "not an agentperf result file: {} (no benchmarks object)".format(source))
     for bid, entry in doc["benchmarks"].items():
-        if not isinstance(entry, dict):
-            raise ValueError(
-                "benchmark {!r} in {} is not an object".format(bid, source))
+        if not isinstance(bid, str) or not isinstance(entry, dict):
+            bad("benchmark {!r} is not an object".format(bid))
         if not _finite_number(entry.get("median")):
-            raise ValueError(
-                "benchmark {!r} in {} has no finite numeric median".format(bid, source))
+            bad("benchmark {!r} has no finite numeric median".format(bid))
+        if not isinstance(entry.get("category"), str) \
+                or not entry.get("category"):
+            bad("benchmark {!r} has no category".format(bid))
+        if not _finite_number(entry.get("weight")):
+            bad("benchmark {!r} has no finite numeric weight".format(bid))
+        for key in ("lower_is_better", "scored", "noisy"):
+            if key in entry and not isinstance(entry[key], bool):
+                bad("benchmark {!r} has a non-boolean {}".format(bid, key))
+        if "lower_is_better" not in entry or "scored" not in entry:
+            bad("benchmark {!r} is missing lower_is_better/scored".format(bid))
         samples = entry.get("samples")
-        if samples is not None and (
-                not isinstance(samples, list)
-                or not all(_finite_number(s) for s in samples)):
-            raise ValueError(
-                "benchmark {!r} in {} has malformed samples".format(bid, source))
-        for key in ("weight", "ops", "cv", "min", "max", "p10", "p90", "n"):
-            if entry.get(key) is not None and not _finite_number(entry[key]):
-                raise ValueError(
-                    "benchmark {!r} in {} has a non-numeric {}".format(
-                        bid, source, key))
+        if not isinstance(samples, list) or not samples \
+                or not all(_finite_number(s) for s in samples):
+            bad("benchmark {!r} has malformed samples".format(bid))
+        for key in ("ops", "cv", "min", "max", "p10", "p90", "n", "runs"):
+            if key in entry and not _finite_number(entry[key]):
+                bad("benchmark {!r} has a non-numeric {}".format(bid, key))
+        for key in ("title", "unit", "models"):
+            if key in entry and not isinstance(entry[key], str):
+                bad("benchmark {!r} has a non-text {}".format(bid, key))
+        if "meta" in entry and not isinstance(entry["meta"], dict):
+            bad("benchmark {!r} has a non-object meta".format(bid))
+        run_samples = entry.get("run_samples")
+        if "run_samples" in entry and (
+                not isinstance(run_samples, list)
+                or any(not isinstance(r, list)
+                       or not all(_finite_number(s) for s in r)
+                       for r in run_samples)):
+            bad("benchmark {!r} has malformed run_samples".format(bid))
+        if "run_medians" in entry and (
+                not isinstance(entry["run_medians"], list)
+                or not all(_finite_number(s) for s in entry["run_medians"])):
+            bad("benchmark {!r} has malformed run_medians".format(bid))
     for key in ("system", "corpus", "skipped", "tools", "tool_versions",
-                "scoring_config", "measurement_env"):
-        if doc.get(key) is not None and not isinstance(doc[key], dict):
-            raise ValueError(
-                "field {!r} in {} is not an object".format(key, source))
+                "scoring_config", "measurement_env", "reference_profile"):
+        if key in doc and not isinstance(doc[key], dict):
+            bad("field {!r} is not an object".format(key))
+    if "label" in doc and not isinstance(doc["label"], str):
+        bad("field 'label' is not text")
+    if "schema" in doc and (not isinstance(doc["schema"], int)
+                             or isinstance(doc["schema"], bool)):
+        bad("field 'schema' is not a version number")
+    for key in ("kind", "suite_version", "package_version", "profile",
+                "started_at", "fingerprint"):
+        if key in doc and not isinstance(doc[key], str):
+            bad("field {!r} is not text".format(key))
+    if "duration_s" in doc and not _finite_number(doc["duration_s"]):
+        bad("field 'duration_s' is not a finite number")
+    corpus = doc.get("corpus")
+    if isinstance(corpus, dict):
+        if "fixture_hash" in corpus \
+                and not isinstance(corpus["fixture_hash"], str):
+            bad("corpus fixture_hash is not text")
+        for key in ("files", "bytes"):
+            if key in corpus and not _finite_number(corpus[key]):
+                bad("corpus {} is not a finite number".format(key))
+    config = doc.get("scoring_config")
+    if isinstance(config, dict) and "category_weights" in config:
+        weights = config["category_weights"]
+        if not isinstance(weights, dict) or not all(
+                isinstance(k, str) and _finite_number(v)
+                for k, v in weights.items()):
+            bad("scoring_config category_weights is malformed")
+    env = doc.get("measurement_env")
+    if isinstance(env, dict) and "shell_launch" in env \
+            and not isinstance(env["shell_launch"], str):
+        bad("measurement_env shell_launch is not text")
+    skipped = doc.get("skipped")
+    if isinstance(skipped, dict) and not all(
+            isinstance(v, str) for v in skipped.values()):
+        bad("field 'skipped' has non-text reasons")
+    for key in ("tools", "tool_versions"):
+        values = doc.get(key)
+        if isinstance(values, dict) and not all(
+                v is None or isinstance(v, str) for v in values.values()):
+            bad("field {!r} has non-text values".format(key))
+    for key in ("combined_runs", "merged_runs"):
+        if key in doc and (not isinstance(doc[key], list)
+                           or not all(isinstance(r, dict)
+                                      for r in doc[key])):
+            bad("field {!r} is not a list of objects".format(key))
     return doc
 
 
@@ -145,14 +215,20 @@ def coverage(result, reference, cats: Dict[str, str], category_weights=None) -> 
 
 
 def _definition(entry):
-    return (entry.get("category"), round(float(entry.get("weight") or 0), 6),
+    try:
+        weight = round(float(entry.get("weight")), 6)
+    except (TypeError, ValueError):
+        weight = 0.0
+    return (entry.get("category"), weight,
             bool(entry.get("scored")), entry.get("unit"),
             bool(entry.get("lower_is_better")), entry.get("ops"))
 
 
 def _method(entry):
     """How a benchmark measured, where that can differ between machines."""
-    meta = entry.get("meta") or {}
+    meta = entry.get("meta")
+    if not isinstance(meta, dict):
+        return ""
     parts = []
     for key in ("method", "impl", "shell_kind"):
         if meta.get(key):
@@ -173,6 +249,69 @@ def scoring_config_snapshot(category_weights=None) -> Dict[str, object]:
     return {"category_weights": {k: float(v) for k, v in sorted(weights.items())}}
 
 
+# The scored benchmarks that launch a shell. Each has its own effective
+# shell-startup policy; they are compared independently, because one
+# benchmark's recorded policy must never mask another's.
+SHELL_BENCHMARKS = ("process.shell", "process.parallel")
+
+
+def _classify_shell_policy(text) -> str:
+    """One recorded policy string -> sanitized / inherited / unknown.
+
+    Only the string itself is read: the first of the two policy words
+    in it decides (recorded values lead with the word, as in
+    "sanitized (removed: ...)" or "sanitized-equivalent ...")."""
+    if not isinstance(text, str):
+        return "unknown"
+    lowered = text.lower()
+    sanitized = lowered.find("sanitized")
+    inherited = lowered.find("inherited")
+    if sanitized == -1 and inherited == -1:
+        return "unknown"
+    if inherited == -1 or (sanitized != -1 and sanitized < inherited):
+        return "sanitized"
+    return "inherited"
+
+
+def _doc_shell_launch(doc) -> str:
+    """The document-level shell policy: measurement_env.shell_launch only.
+
+    Other measurement_env fields (the Node spawn diagnostic) describe a
+    different launch and must never classify scored shell launches."""
+    env = (doc or {}).get("measurement_env")
+    if isinstance(env, dict):
+        return _classify_shell_policy(env.get("shell_launch"))
+    return "unknown"
+
+
+def _bench_shell_policy(doc, bid) -> str:
+    """Effective shell-startup policy for one scored shell benchmark.
+
+    Its own ``env_policy`` note wins; the document-level
+    ``measurement_env.shell_launch`` is the fallback for benchmarks
+    measured before the note existed."""
+    benchmarks = (doc or {}).get("benchmarks")
+    entry = benchmarks.get(bid) if isinstance(benchmarks, dict) else None
+    if isinstance(entry, dict):
+        meta = entry.get("meta")
+        if isinstance(meta, dict):
+            policy = _classify_shell_policy(meta.get("env_policy"))
+            if policy != "unknown":
+                return policy
+    return _doc_shell_launch(doc)
+
+
+def shell_env_policies(doc) -> Dict[str, str]:
+    """{benchmark id: effective policy} for each scored shell benchmark
+    present in *doc*. Compatibility and combine compare these per
+    benchmark, never as one document-level value."""
+    benchmarks = (doc or {}).get("benchmarks")
+    if not isinstance(benchmarks, dict):
+        return {}
+    return {bid: _bench_shell_policy(doc, bid)
+            for bid in SHELL_BENCHMARKS if bid in benchmarks}
+
+
 def shell_env_policy(doc) -> str:
     """Effective shell-startup policy a result was measured under.
 
@@ -180,26 +319,16 @@ def shell_env_policy(doc) -> str:
     variables removed, or a recorded sanitized-equivalent: measured
     before the policy was recorded, with those variables verified unset
     on the measuring machine), ``inherited`` (startup files could run
-    and be timed), or ``unknown`` (nothing recorded: files written
-    before the policy existed, where equivalence cannot be confirmed).
-    The per-benchmark ``env_policy`` note wins over the document-level
-    ``measurement_env`` summary."""
-    benchmarks = (doc or {}).get("benchmarks") or {}
-    for bid in ("process.shell", "process.parallel"):
-        meta = (benchmarks.get(bid) or {}).get("meta") or {}
-        policy = str(meta.get("env_policy") or "").lower()
-        if "sanitized" in policy:
-            return "sanitized"
-        if "inherited" in policy:
-            return "inherited"
-    env = (doc or {}).get("measurement_env")
-    text = " ".join(str(v) for v in env.values()).lower() \
-        if isinstance(env, dict) else str(env or "").lower()
-    if "sanitized" in text:
-        return "sanitized"
-    if "inherited" in text:
-        return "inherited"
-    return "unknown"
+    and be timed), ``mixed`` (the scored shell benchmarks disagree), or
+    ``unknown`` (nothing recorded: files written before the policy
+    existed, where equivalence cannot be confirmed). Each benchmark's
+    ``env_policy`` note wins over the document-level
+    ``measurement_env.shell_launch`` for that benchmark."""
+    policies = shell_env_policies(doc)
+    if policies:
+        distinct = set(policies.values())
+        return distinct.pop() if len(distinct) == 1 else "mixed"
+    return _doc_shell_launch(doc)
 
 
 def _weights_for(doc):
@@ -285,25 +414,41 @@ def compatibility_warnings(result, reference) -> List[str]:
         warnings.append("measurement methods differ for {}.{}".format(shown, extra))
     # The shell-startup policy is part of the measurement method: an
     # inherited BASH_ENV times startup scripts, a sanitized launch
-    # cannot. Two files from before the policy was recorded share the
+    # cannot. Each scored shell benchmark's effective policy is
+    # compared independently, so one benchmark's policy (or an
+    # unrelated measurement_env field) can never mask another's. Two
+    # files from before the policy was recorded share the
     # inherited-era code and do not warn against each other.
-    mine_policy = shell_env_policy(result)
-    theirs_policy = shell_env_policy(reference)
-    if mine_policy != theirs_policy:
+    mine_policies = shell_env_policies(result)
+    theirs_policies = shell_env_policies(reference)
+    for bid in SHELL_BENCHMARKS:
+        if bid not in mine_policies or bid not in theirs_policies:
+            continue
+        mine_entry = (result.get("benchmarks") or {}).get(bid)
+        theirs_entry = (reference.get("benchmarks") or {}).get(bid)
+        mine_entry = mine_entry if isinstance(mine_entry, dict) else {}
+        theirs_entry = theirs_entry if isinstance(theirs_entry, dict) \
+            else {}
+        if not (mine_entry.get("scored") or theirs_entry.get("scored")):
+            continue
+        mine_policy = mine_policies[bid]
+        theirs_policy = theirs_policies[bid]
+        if mine_policy == theirs_policy:
+            continue
         if "unknown" in (mine_policy, theirs_policy):
             side = "result" if mine_policy == "unknown" else "reference"
             warnings.append(
-                "shell environment policy is unknown for the {} (written "
-                "before the policy was recorded): if BASH_ENV or ENV was "
-                "set when it ran, its shell tests timed startup scripts, "
-                "so shell scores may not be the same work as the other "
-                "file's.".format(side))
+                "shell environment policy is unknown for the {} ({}, "
+                "written before the policy was recorded): if BASH_ENV or "
+                "ENV was set when it ran, its shell tests timed startup "
+                "scripts, so shell scores may not be the same work as "
+                "the other file's.".format(side, bid))
         else:
             warnings.append(
-                "shell environment policies differ (result: {}, reference: "
-                "{}): scored shell launches did different work, so shell "
-                "scores are not strictly comparable.".format(
-                    mine_policy, theirs_policy))
+                "shell environment policies differ for {} (result: {}, "
+                "reference: {}): scored shell launches did different "
+                "work, so shell scores are not strictly comparable.".format(
+                    bid, mine_policy, theirs_policy))
     # A stored fingerprint must match the document it travels with,
     # recomputed under the document's own recorded scoring config.
     for side, doc in (("result", result), ("reference", reference)):

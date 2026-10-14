@@ -38,9 +38,15 @@
   manifest entries outside that list are ignored, nothing is written or
   deleted through a symlink or junction, `--force` never widens that
   confinement, and a forced uninstall of a copy agentperf did not install
-  removes only the recognized skill files and keeps your other files. It
-  installs no code that runs on its own; the files are instructions your
-  agent reads.
+  removes only the recognized skill files and keeps your other files. One
+  limit, stated plainly: the link checks are check-then-write, so a
+  same-user process that swaps a checked file or folder for a link in
+  the moment between the check and the write can win that race. Closing
+  it would need no-follow file APIs Python does not portably expose. The
+  target folders are your own, so treat this confinement as defense
+  against accidents and crafted manifests, not against a live local
+  adversary. It installs no code that runs on its own; the files are
+  instructions your agent reads.
 - **`--json` summaries** are plain JSON views of a result. They are **not**
   anonymized: they carry labels, file paths, and findings from the raw
   result. Keep them as private as the result itself.
@@ -57,10 +63,10 @@
   deletes anything, so tool subprocesses do not outlive the session. One
   limit, stated plainly: on Windows there is no process group to signal
   once the harness itself has exited, so a descendant that outlives an
-  exited Windows harness can survive. Task verification never trusts the
-  agent's interpreter: hidden checks call the agent's code in a
-  subprocess that only emits outputs, and the pass/fail decision is made
-  in agentperf's own process.
+  exited Windows harness can survive. Verification runs the agent's
+  code in a separate process and decides pass/fail in the parent; it is
+  built to catch wrong code, not to resist a deliberately adversarial
+  agent.
 
 ## What a result file contains, and sharing
 
@@ -79,9 +85,14 @@ the day), workdir and other home paths including everything under them
 and home folder names that contain spaces), volume names, process names
 (kept only as counts), security brand names (kept only as detected/active
 flags), tool paths (file names only), email and IP/MAC addresses, and
-user/host names - in any letter case - appearing in kept free-text fields
-or in keys. A string that still looks identifying after scrubbing is
-withheld whole, never passed through. It prints every change. One limit: a hardware
+user/host names - in any letter case - appearing in kept free-text
+fields. Paths are scrubbed wherever they appear, including in keys.
+Schema fields themselves (benchmark ids, categories, units, method
+strings, scoring config) are never rewritten, so a shared file scores
+exactly like the original, even when a host or user name is a common
+word such as "work" or "git". A free-text string that still looks
+identifying after scrubbing is withheld whole, never passed through.
+It prints every change. One limit: a hardware
 serial number typed into a free-text field by hand looks like any other hex
 string and cannot be detected; the fields where the suite itself records
 serial-bearing data are dropped outright. Still read the file once before

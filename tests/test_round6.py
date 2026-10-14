@@ -373,9 +373,14 @@ class RemoteRound6Test(unittest.TestCase):
         self.assertFalse(_valid_fetched({"label": "other", "benchmarks": {}}, "host1"))
         self.assertFalse(_valid_fetched({"label": "host1"}, "host1"))
         # Round 7: entries need finite medians to count as a result.
-        self.assertTrue(_valid_fetched(
+        # Round 8 (F7): a median alone is no longer enough; the entry
+        # must pass full result validation.
+        self.assertFalse(_valid_fetched(
             {"label": "host1",
              "benchmarks": {"process.shell": {"median": 1.0}}}, "host1"))
+        self.assertTrue(_valid_fetched(
+            _doc("host1", {"process.shell": _entry("process", 1.0)}),
+            "host1"))
 
 
 class ReportRound6Test(_Tmp):

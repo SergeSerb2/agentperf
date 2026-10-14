@@ -11,7 +11,7 @@ A run deletes its own `corpus/`, `repo/`, and `scratch/` folders inside its work
 
 ## Consent and side effects
 
-- `agentperf live` starts real Claude Code and Codex sessions. It costs tokens and runs with open permissions inside throwaway fixture copies. Run `agentperf live --dry-run` first. Start a real live run only after the user says yes to the session count.
+- `agentperf live` starts real Claude Code and Codex sessions. It costs tokens and runs with open permissions inside throwaway fixture copies. Run `agentperf live --dry-run` first. Start a real live run only after the user says yes to the session count. Verification runs the agent's code in a separate process and decides pass/fail in the parent; it is built to catch wrong code, not to resist a deliberately adversarial agent.
 - `--fetch-tools` downloads a pinned ripgrep build (and Node, if missing) into `~/.agentperf/tools`. It checks SHA-256 and never changes `PATH`. Say that a download will happen the first time you use it on a machine.
 - Network (Reach) tests contact public hosts and move about 33 MB. They send no keys and no user data. Use `--no-network` when the user is offline or on a metered link.
 - Never change antivirus, indexing, power plans, Defender settings, or WSL configuration. You may explain what a change would do. The user makes it.

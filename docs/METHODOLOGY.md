@@ -199,8 +199,10 @@ results.
 `agentperf live` runs real Claude Code and Codex sessions on three fixed tasks in
 a generated Python repo: fix a planted bug, rename a function across about 8
 files, and add a small feature. Hidden verifier tests run from outside the
-agent's repo, so nothing the agent writes can change which tests execute, and
-a verifier only passes when the expected tests actually ran. Each output line is time-stamped on arrival. Tool time is the union
+agent's repo, and a verifier only passes when the expected tests actually
+ran. Verification runs the agent's code in a separate process and decides
+pass/fail in the parent; it is built to catch wrong code, not to resist a
+deliberately adversarial agent. Each output line is time-stamped on arrival. Tool time is the union
 of the intervals from a tool call event to its result event, so parallel calls
 are not counted twice. Model time is the rest of the wall time after startup.
 Live runs cost tokens; the default is one run per task per harness.

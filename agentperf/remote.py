@@ -244,33 +244,56 @@ def _subcommand(args, label: str, remote_out: str) -> List[str]:
 
 def _valid_fetched(doc, label: str, mode: str = "run") -> bool:
     """A fetched file is this run's result only when it is structurally
-    a result of its mode: an object with the expected label and, for a
-    suite run, a non-empty benchmarks object whose entries all carry
-    finite numeric medians (an empty benchmarks object is not success);
-    for live, a non-empty runs list of objects; for doctor, the summary
+    a result of its mode, with the fields needed to interpret it: an
+    object with the expected label and, for a suite run, a non-empty
+    benchmarks object that passes the full result validation
+    (``scoring.validate_result``: medians alone do not make a result);
+    for live, a non-empty runs list whose entries carry a harness, a
+    task, a boolean success, and a wall time; for doctor, the summary
     shape (``ok`` plus a checks list, no label check: doctor summaries
     carry no run label)."""
     if not isinstance(doc, dict):
         return False
     if mode == "doctor":
         return isinstance(doc.get("ok"), bool) \
-            and isinstance(doc.get("checks"), list)
+            and isinstance(doc.get("checks"), list) \
+            and all(isinstance(c, str) for c in doc["checks"])
     if doc.get("label") != label:
         return False
     if mode == "live":
+        if doc.get("kind") not in (None, "live"):
+            return False
         runs = doc.get("runs")
-        return isinstance(runs, list) and bool(runs) \
-            and all(isinstance(r, dict) for r in runs)
+        if not isinstance(runs, list) or not runs:
+            return False
+        for run in runs:
+            if not isinstance(run, dict):
+                return False
+            if not isinstance(run.get("harness"), str) \
+                    or not run.get("harness"):
+                return False
+            if not isinstance(run.get("task"), str) or not run.get("task"):
+                return False
+            if not isinstance(run.get("success"), bool):
+                return False
+            wall = run.get("wall_s")
+            if isinstance(wall, bool) \
+                    or not isinstance(wall, (int, float)) \
+                    or not math.isfinite(float(wall)):
+                return False
+            if "exit_code" in run and run["exit_code"] is not None \
+                    and (isinstance(run["exit_code"], bool)
+                         or not isinstance(run["exit_code"], int)):
+                return False
+        return True
     benchmarks = doc.get("benchmarks")
     if not isinstance(benchmarks, dict) or not benchmarks:
         return False
-    for entry in benchmarks.values():
-        if not isinstance(entry, dict):
-            return False
-        median = entry.get("median")
-        if isinstance(median, bool) or not isinstance(median, (int, float)) \
-                or not math.isfinite(float(median)):
-            return False
+    from . import scoring
+    try:
+        scoring.validate_result(doc, "fetched result")
+    except ValueError:
+        return False
     return True
 
 

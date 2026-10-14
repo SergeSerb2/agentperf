@@ -36,18 +36,35 @@ TASK_NAMES = ["fix", "rename", "feature"]
 # that executes agent code: imported agent code can (and did) patch
 # the real unittest classes and record fake successes. Instead a
 # subprocess probe only *calls* the agent's function and emits raw
-# outputs; the expected values are computed and compared here, in the
-# trusted parent, which never imports the repo.
+# outputs; it receives inputs only - never expected outputs or the
+# comparison logic - and it returns them over a channel captured
+# before the agent's code is imported (saved serializer, saved
+# os.write, a file descriptor opened up front), so patching
+# json.dump and friends afterwards cannot rewrite the results. The
+# expected values are computed and compared in the trusted parent,
+# which never imports the repo. This catches wrong code; it is not
+# built to resist a deliberately adversarial agent (see SECURITY.md).
 _PROBE = '''import json
+import os
 import sys
 
+_dumps = json.dumps
+_loads = json.loads
+_write = os.write
+_open = os.open
+_close = os.close
+_isinstance = isinstance
+_bool = bool
+_int = int
+_float = float
 repo, cases_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.argv = [sys.argv[0]]
 sys.path = [p for p in sys.path if p not in ("", ".")]
+with open(cases_path, encoding="utf-8") as fh:
+    cases = _loads(fh.read())
+_out_fd = _open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 if repo not in sys.path:
     sys.path.append(repo)
-with open(cases_path, encoding="utf-8") as fh:
-    cases = json.load(fh)
 from calcbox.numbers import clamp
 out = []
 for value, low, high in cases:
@@ -56,12 +73,18 @@ for value, low, high in cases:
     except Exception as exc:
         out.append({"error": type(exc).__name__})
     else:
-        if isinstance(result, bool) or not isinstance(result, (int, float)):
+        if _isinstance(result, _bool) \\
+                or not _isinstance(result, (_int, _float)):
             out.append({"error": "returned non-number %r" % (result,)})
+        elif _isinstance(result, _float):
+            out.append(_float(result))
         else:
-            out.append(result)
-with open(out_path, "w", encoding="utf-8") as fh:
-    json.dump(out, fh)
+            out.append(_int(result))
+payload = _dumps(out).encode("utf-8")
+while payload:
+    written = _write(_out_fd, payload)
+    payload = payload[written:]
+_close(_out_fd)
 '''
 
 
@@ -77,14 +100,23 @@ FIXTURE_TEST_COUNT = 8
 # the stdlib import), and snapshots the unittest entry points before
 # any repo module loads, restoring them before the run: agent code
 # that patches TestCase.run at import time cannot keep the patch. It
-# writes counts to a JSON file the verifier reads, and the verifier
-# requires a zero process exit status on top. It is launched with
-# `python -I`, so an inherited PYTHONPATH (and any shadow `unittest`
-# module on it) is ignored entirely.
-_RUNNER = '''import json
+# writes counts to a JSON file the verifier reads, through the same
+# captured channel as the hidden probe (saved serializer and write
+# handle, descriptor opened before discovery imports repo code), and
+# the verifier requires a zero process exit status on top. It is
+# launched with `python -I`, so an inherited PYTHONPATH (and any
+# shadow `unittest` module on it) is ignored entirely.
+_RUNNER = '''import io
+import json
+import os
 import sys
 import unittest
 
+_dumps = json.dumps
+_write = os.write
+_open = os.open
+_close = os.close
+_StringIO = io.StringIO
 mode, repo, result_path = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.argv = [sys.argv[0]]
 _saved = {
@@ -94,6 +126,8 @@ _saved = {
     "TestResult.addError": unittest.TestResult.addError,
     "TextTestRunner.run": unittest.TextTestRunner.run,
 }
+_result_fd = _open(result_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                   0o600)
 sys.path = [p for p in sys.path if p not in ("", ".")]
 if repo not in sys.path:
     sys.path.append(repo)
@@ -104,13 +138,16 @@ unittest.TestResult.addSuccess = _saved["TestResult.addSuccess"]
 unittest.TestResult.addFailure = _saved["TestResult.addFailure"]
 unittest.TestResult.addError = _saved["TestResult.addError"]
 unittest.TextTestRunner.run = _saved["TextTestRunner.run"]
-import io
-stream = io.StringIO()
+stream = _StringIO()
 result = unittest.TextTestRunner(stream=stream, verbosity=1).run(suite)
-with open(result_path, "w", encoding="utf-8") as fh:
-    json.dump({"ran": result.testsRun, "ok": result.wasSuccessful(),
-               "failures": len(result.failures), "errors": len(result.errors),
-               "tail": stream.getvalue()[-400:]}, fh)
+payload = _dumps({"ran": result.testsRun, "ok": result.wasSuccessful(),
+                  "failures": len(result.failures),
+                  "errors": len(result.errors),
+                  "tail": stream.getvalue()[-400:]}).encode("utf-8")
+while payload:
+    written = _write(_result_fd, payload)
+    payload = payload[written:]
+_close(_result_fd)
 '''
 
 
@@ -123,9 +160,10 @@ def _run_guarded(argv, cwd, timeout):
     """subprocess.run equivalent that owns the child's process group.
 
     Verifier subprocesses execute agent code too: anything they spawn
-    is cleaned up with the group, on completion and on timeout, the
-    same discipline the harness gets. Returns (returncode, stdout);
-    raises subprocess.TimeoutExpired after cleanup on timeout."""
+    is cleaned up with the group on every exit path - completion,
+    timeout, and interruption (KeyboardInterrupt included) - the same
+    discipline the harness gets. Returns (returncode, stdout); raises
+    subprocess.TimeoutExpired after cleanup on timeout."""
     from .harness import _cleanup_group
     proc = subprocess.Popen(
         argv, cwd=cwd, env=_isolated_env(), stdout=subprocess.PIPE,
@@ -133,10 +171,8 @@ def _run_guarded(argv, cwd, timeout):
         start_new_session=(os.name != "nt"))
     try:
         out, _none = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    finally:
         _cleanup_group(proc)
-        raise
-    _cleanup_group(proc)
     return proc.returncode, out or ""
 
 

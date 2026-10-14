@@ -484,13 +484,22 @@ class RemoteRound7Test(_Tmp):
             "my-mac"))
         self.assertFalse(_valid_fetched(
             {"label": "my-mac", "benchmarks": {"a": [1]}}, "my-mac"))
-        self.assertTrue(_valid_fetched(
+        # Round 8 (F7): system fetches reuse full result validation,
+        # so a median-only entry is refused and a full entry is kept.
+        self.assertFalse(_valid_fetched(
             {"label": "my-mac", "benchmarks": {"a": {"median": 1.5}}},
             "my-mac"))
+        self.assertTrue(_valid_fetched(
+            _doc("my-mac", {"a": _entry("process", 1.5)}), "my-mac"))
         self.assertFalse(_valid_fetched(
             {"label": "x", "runs": []}, "x", mode="live"))
-        self.assertTrue(_valid_fetched(
+        # Round 8 (F7): live runs must be interpretable, not just objects.
+        self.assertFalse(_valid_fetched(
             {"label": "x", "runs": [{"task": "fix"}]}, "x", mode="live"))
+        self.assertTrue(_valid_fetched(
+            {"label": "x", "runs": [{"harness": "claude", "task": "fix",
+                                     "success": True, "wall_s": 1.0}]},
+            "x", mode="live"))
 
     def test_f7_operational_exception_does_not_abort_fleet(self):
         from agentperf import remote

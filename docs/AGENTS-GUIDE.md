@@ -176,7 +176,7 @@ Raw results hold hostnames, home paths, process names, and security product name
 
 ## Safety
 
-- **Live runs cost tokens.** `agentperf live` starts real agent sessions with open permissions in throwaway fixture copies. Show `agentperf live --dry-run` first. Get a clear yes for the session count. Never run it as a surprise extra.
+- **Live runs cost tokens.** `agentperf live` starts real agent sessions with open permissions in throwaway fixture copies. Show `agentperf live --dry-run` first. Get a clear yes for the session count. Never run it as a surprise extra. Verification runs the agent's code in a separate process and decides pass/fail in the parent; it is built to catch wrong code, not to resist a deliberately adversarial agent.
 - **Work folders.** agentperf deletes its own `corpus/`, `repo/`, and `scratch/` inside its work folder, and refuses a non-empty folder it did not create. Never point `--workdir` into a user repo to "measure the real disk". The default folder is on the home disk; if the user needs another disk measured, create a new empty folder there together.
 - **No system changes.** Do not change antivirus, indexing, power, WSL, SSH, or shell startup settings. Diagnose and recommend. The user applies fixes, or asks you to make one specific change at a time.
 - **Cleanup.** Remove scratch files you made (extra summaries, test HTML). Keep results and reports the user asked for, and name where they are. On remotes, `--clean` empties each work folder; the copied `agentperf.pyz` in `~/.agentperf/` is small and useful. Mention it remains.

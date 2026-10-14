@@ -98,19 +98,27 @@ established (see the shell note).
   - `share` now scrubs paths whose segments contain spaces (a volume
     named "Client Merger Documents", a `C:\Users\Alice Smith` home, a
     spaced `/Users/...` home), UNC paths, `~/` and `~user` paths, email
-    addresses, and case variants of known user/host names, including in
-    keys; a string that still looks identifying afterwards is withheld
-    whole instead of passing through.
+    addresses, and case variants of known user/host names in free-text
+    fields; paths are scrubbed wherever they appear, including in keys,
+    in any letter case and with apostrophes in folder names. The scrub
+    is schema-aware: benchmark ids, categories, units, method strings,
+    and scoring config are never rewritten, so a shared file scores
+    exactly like the original even when a host or user name is a common
+    word ("work", "git"). A free-text string that still looks
+    identifying afterwards is withheld whole instead of passing through.
   - Live mode: the harness's whole process group is cleaned up on every
     exit path (normal, error, timeout, Ctrl-C), before verification or
     fixture deletion, so a tool subprocess that ignores SIGTERM is
     killed even after its parent exits (on Windows, a descendant that
     outlives an exited harness can still survive; there is no process
-    group to signal). Hidden verification no longer runs trusted
-    assertions in the agent's interpreter at all: a subprocess probe
-    only emits the agent function's outputs for fresh inputs, the
-    pass/fail decision is made in agentperf's own process, and a zero
-    verifier exit status is required.
+    group to signal). Hidden verification runs the agent's code in a
+    separate process and decides pass/fail in the parent: the probe
+    receives fresh inputs only (never expected outputs), returns raw
+    outputs over a channel captured before the agent's code is
+    imported, a zero verifier exit status is required, and stopping a
+    verifier with Ctrl-C still cleans up its process group. It is
+    built to catch wrong code, not to resist a deliberately
+    adversarial agent.
   - Remote and JSON hardening: one host's operational failure (missing
     `ssh`, a failed copy) no longer aborts the fleet; fetched results
     are validated structurally per mode (an empty `benchmarks` is not
@@ -129,6 +137,16 @@ established (see the shell note).
     `--self-reference` / `--no-reference`); JSON summaries state LW100
     component coverage; failed skill removals report `failed` and exit
     nonzero; `doctor` now checks macOS Low Power Mode.
+  - Comparability and validation, tightened once more: shell-startup
+    policies are compared per scored shell benchmark (`process.shell`
+    and `process.parallel` independently, from
+    `measurement_env.shell_launch` specifically), and `combine` refuses
+    the same mismatches, so an unrelated diagnostic field can no longer
+    mask one. Malformed result files (a list where `meta` belongs, a
+    null `weight`, and the like) are rejected up front as clean exit-2
+    errors on every command, and fetched remote results must pass the
+    same full validation (live fetches must carry interpretable runs).
+    Scores do not move: every bundled profile scores exactly as before.
   - Smaller correctness fixes: a failed launch inside the 32-way
     parallel spawn reaps the shells that did start; a cached tool must
     exit 0 to count as working; every network test records its own TLS

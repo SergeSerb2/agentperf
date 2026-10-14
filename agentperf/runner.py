@@ -126,8 +126,8 @@ def prepare_workdir(workdir: str) -> None:
             "agentperf never adopts an unmarked non-empty directory, even "
             "one that looks like an old work folder: nothing in it proves a "
             "repo/ beside the corpus is agentperf's. If this is a work "
-            "folder from an old agentperf version, delete it (it holds only "
-            "regenerable corpus files) or pick the default "
+            "folder from an old agentperf version and nothing in it "
+            "matters to you, delete it yourself, or pick the default "
             "(~/.agentperf/work).".format(workdir, MARKER_NAME))
     os.makedirs(workdir, exist_ok=True)
     marker = os.path.join(workdir, MARKER_NAME)
