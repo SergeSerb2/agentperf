@@ -11,8 +11,8 @@ Exit codes are stable. Scripts may rely on them.
 | Code | Meaning |
 |---|---|
 | 0 | Success. |
-| 1 | The command ran, but the work failed or was refused: an empty or all-failed run, a refused work folder, a failed remote host, a skill copy conflict (`skill install` / `uninstall` with status `refused`), or a failed live task. A remote command also passes through its own non-zero code when that code is not 1 or 2. |
-| 2 | Usage or bad input: unknown flags, a missing file, a malformed result file, incompatible inputs to `combine` or `merge`, an unknown `--ref`, an invalid label, or an ambiguous `--wsl` form. |
+| 1 | The command ran, but the work failed or was refused: an empty or all-failed run, a refused work folder, a failed remote host, a skill copy conflict or failed removal (`skill install` / `uninstall` with status `refused` or `failed`), or a failed live task. A remote command also passes through its own non-zero code when that code is not 1 or 2. |
+| 2 | Usage or bad input: unknown flags, a missing file, a malformed result file (including non-object or non-finite benchmark entries), incompatible inputs to `combine` or `merge`, an unknown or missing reference, an invalid label, a selector that matches no benchmark, or an ambiguous `--wsl` form. |
 | 130 | Interrupted with Ctrl-C. Partial work files stay in the work folder. |
 
 Two special cases:
@@ -40,6 +40,8 @@ Every summary is one JSON object with:
 
 Summaries are views. They never change scoring. Numbers use `null` when a value does not exist (for example Reach with `--no-network`). Never read `null` as zero.
 
+When a command given `--json` fails, it still writes one JSON object - never an empty stream: an error summary with the same `command`, `summary_version`, and `package_version` fields, plus `ok: false`, `error` (one plain-word message), and `exit_code` (the process exit code). Check `ok` before reading result fields. Summaries are strict JSON: non-finite numbers (NaN, Infinity) are rejected as bad input instead of being written.
+
 ## Result summary (`run` and `report`)
 
 `run` writes this after it saves the result file. `report` writes the same shape for a saved result (`command` differs).
@@ -56,13 +58,14 @@ Summaries are views. They never change scoring. Numbers use `null` when a value 
 | `benchmarks_run` | How many benchmarks produced values. |
 | `skipped` | Test id to skip reason. Empty object when nothing skipped. |
 | `findings` | List of `{level, topic, text}`. Levels: `warn`, `tip`, `info`. |
-| `reference.label`, `reference.fingerprint` | What the scores compare against. `reference` is `null` only when no reference could be loaded. |
+| `reference.label`, `reference.fingerprint` | What the scores compare against. `reference` is `null` only for `run --no-reference` (measure without scoring); a missing default reference is otherwise an error, never a silent self-reference. |
 | `agentmark` | Headline score. Reference speed is 1000. |
 | `agentmark_ci` | 90% interval `[low, high]`, or `null`. |
 | `ci_kind` | `within-run interval`, or `bootstrap over runs and samples` for combined runs. |
 | `coverage` | Share (0 to 1) of the reference's test weight that this result scored. |
 | `reach`, `reach_ci` | Network score and interval, or `null`. |
 | `lw100_seconds`, `lw100_reference_seconds` | Estimated local wait per 100 tool calls, on the parts both sides measured. `null` when no parts measured. |
+| `lw100_covered_components`, `lw100_missing_components` | Which of the eight LW100 parts the seconds cover, and which they omit. A non-empty missing list means the seconds are a partial mix, not the whole wait. |
 | `categories` | Category name to score (reference speed is 1000 in each). |
 | `comparability_warnings` | Plain-word reasons the two files may not compare strictly. Empty list means comparable. |
 | `verdict` | One-sentence reading of the score. |
@@ -70,7 +73,7 @@ Summaries are views. They never change scoring. Numbers use `null` when a value 
 | `top_causes` | Up to three ranked causes: `{topic, confidence, gain_estimated, gain_points, fix}`. Gains are counterfactual estimates at reference speed, not ceilings. `gain_points` is `null` when not estimated. |
 | `minor_causes` | Topic names of real but small causes (each under +5 AgentMark). |
 
-With no reference, `agentmark`, `reach`, and category scores are absent or `null`, `top_causes` is empty, and `lw100_seconds` still reports when its parts measured. `lw100_reference_seconds` appears only with a reference.
+With no reference (`run --no-reference`), `agentmark`, `reach`, and category scores are absent or `null`, `top_causes` is empty, and `lw100_seconds` still reports when its parts measured. `lw100_reference_seconds` appears only with a reference. For `compare`, `--self-reference` opts in to scoring the first result against itself when no reference can be loaded.
 
 ## Compare summary (`compare`, and `remote --compare`)
 
@@ -92,6 +95,7 @@ Each `machines[]` entry:
 | `agentmark_common` | Score on `common_tests` only. Rank machines on this. |
 | `reach` | Network score, or `null`. |
 | `lw100_common_seconds` | LW100 on the common tests, or `null`. |
+| `lw100_covered_components`, `lw100_missing_components` | LW100 parts covered and omitted on the common set, as in the result summary. |
 | `categories` | Category name to full-test score. |
 | `comparability_warnings` | Warnings for this machine against the reference. |
 
@@ -120,6 +124,7 @@ Under `remote`, this same object sits in the remote summary as `comparison`.
 | `results` | Fetched result files (absolute paths), in run order. |
 | `compare_html` | Comparison path when `--compare` wrote one, else `null`. |
 | `comparison` | The compare summary object. Present only with `--compare` and at least one fetched result. |
+| `compare_error` | Why `--compare` could not run (for example no reference). Present only on that failure. |
 
 Each `hosts[]` entry:
 
@@ -131,19 +136,20 @@ Each `hosts[]` entry:
 | `mode` | The remote command that ran. |
 | `exit_code` | Exit code of the remote command, or `null` when setup failed before it ran. |
 | `result_file` | Fetched file path, or `null`. Always `null` for `doctor`. |
-| `error` | Setup failure text, or `null`. |
+| `error` | Setup, fetch, or validation failure text, or `null`. |
+| `doctor` | Doctor mode only: that host's full doctor summary (`ok`, `checks`, `tools`, `missing_tools`, `system`), or `null` when it could not be fetched. Machine health lives in `doctor.ok`; `exit_code` only says the check ran. |
 
-A run counts as good when `error` is null, `exit_code` is 0, and (for `run` and `live`) `result_file` is set. The command exits 0 only when every run is good.
+A fetched file is accepted only when it is structurally this run's result: the right label and, per mode, a non-empty `benchmarks` object with finite medians, a non-empty `runs` list, or a doctor summary. Anything else is refused, deleted locally, and recorded in `error`. A run counts as good when `error` is null, `exit_code` is 0, and (for `run` and `live`) `result_file` is set, or (for `doctor`) `doctor` is set. The command exits 0 only when every run is good. Labels are portable file names (letters, digits, `.`, `_`, `-`; no leading dot or dash, no trailing dot, no Windows reserved names), and two labels that differ only in case are a collision, refused before any host runs.
 
 ## Skill summaries
 
 `skill install` and `skill uninstall` summaries hold `project` (absolute project root, or `null` for user folders) and `targets[]`. Each target has `target` (`claude`, `codex`, or `agents`), `path`, `status`, and `message`.
 
-Install statuses: `installed`, `updated`, `current`, `refused`. Uninstall statuses: `removed`, `absent`, `refused`. Any `refused` makes the exit code 1.
+Install statuses: `installed`, `updated`, `current`, `refused`, `failed`. Uninstall statuses: `removed`, `absent`, `refused`, `failed`. Any `refused` or `failed` makes the exit code 1. A `failed` uninstall names the managed files it could not remove; the copy is still partly installed.
 
 `skill path` holds `bundled` (where the packaged skill lives) and `files` (the skill file list). With `--target` or `--project` it also holds `targets[]` with `path`, `state`, and `installed_version`. States: `absent`, `foreign` (files with no agentperf manifest), `clean` (files match the manifest), `modified` (files differ, or extra files exist).
 
-An installed skill folder holds `.agentperf-skill.json`: `{skill, package_version, files}`, where `files` maps each skill file to the SHA-256 of what agentperf wrote. Install and uninstall compare the folder against it and refuse to touch edits without `--force`.
+An installed skill folder holds `.agentperf-skill.json`: `{skill, package_version, files}`, where `files` maps each skill file to the SHA-256 of what agentperf wrote. Install and uninstall compare the folder against it and refuse to touch edits without `--force`. Only the known skill files are ever written or removed: manifest entries outside that list are ignored, writes and deletes never follow a symlink or junction out of the folder (`--force` does not change this), and a forced uninstall of a foreign copy removes only the recognized skill files and keeps everything else.
 
 ## The result file (`run` output)
 
@@ -165,7 +171,7 @@ An installed skill folder holds `.agentperf-skill.json`: `{skill, package_versio
 | `skipped` | Test id to reason, for tests that did not run. |
 | `fingerprint` | Measurement and scoring fingerprint over the scored tests, computed under `scoring_config`. Reports validate it against the file's contents. Regenerated by `combine`, `merge`, and `share` when they change the document. |
 | `scoring_config.category_weights` | The category weights the fingerprint was computed with. Absent in files written before 0.4.0; those are read with the weights current at read time, which is what their fingerprints used. |
-| `measurement_env` | Environment policy for scored launches: shell-startup variables removed for scored shells and the Node spawn diagnostic. Metadata only; it is not part of the fingerprint, because on a machine where none of those variables is set the measured work is identical. |
+| `measurement_env` | Shell-startup policy for scored launches. It is part of method compatibility: sanitized launches cannot run startup files, inherited ones can, so differing policies warn. `sanitized-equivalent` means the file was measured before the policy was recorded, with the startup variables verified unset on the measuring machine (recorded for the bundled WSL2, Windows, and M5 Pro profiles; the M1 Pro profile's machine could not be re-checked, so its policy stays unknown and warns against sanitized files). Files with no recorded policy are unknown and warn against sanitized files. |
 | `combined_runs` | Present after `--runs N` or `combine`: the runs that fed the medians. |
 | `merged_runs` | Present after `merge`: passes folded into this file. |
 | `reference_profile` | Present only in bundled reference files: name, date, and description. |
@@ -182,8 +188,8 @@ Each `benchmarks.<id>` entry:
 | `samples` | Raw measurements. |
 | `run_samples`, `run_medians`, `runs` | Present in combined results: per-run detail behind the per-test median of run medians. `run_samples` is aligned with `combined_runs`; an empty list is a run that did not measure this test. |
 | `models` | The agent action this test stands for. |
-| `meta` | Method detail (for example shell kind). Part of comparability. |
+| `meta` | Method detail (for example shell kind and `env_policy`). Part of comparability. |
 
 ### Comparability contract
 
-Two results compare strictly only when, against the same reference file, all of these match: `corpus.fixture_hash`, every shared scored test's definition, every shared scored test's method (`meta`), and the fingerprint over the shared scored tests. Version strings inform; they never decide. `agentperf report` and `compare` print a warning per mismatch, and the summaries carry them as `comparability_warnings`. A missing test does not break comparability. It lowers `coverage`.
+Two results compare strictly only when, against the same reference file, all of these match: `corpus.fixture_hash`, every shared scored test's definition, every shared scored test's method (`meta`, including the shell environment policy), and the fingerprint over the shared scored tests. Version strings inform; they never decide. `agentperf report` and `compare` print a warning per mismatch, and the summaries carry them as `comparability_warnings`. A missing test does not break comparability. It lowers `coverage`. Old files without a recorded shell policy warn against sanitized files: their policy equivalence is unknown, not established.

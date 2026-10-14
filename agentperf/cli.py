@@ -88,7 +88,8 @@ def _load_reference(arg: Optional[str]):
         return scoring.load(path)
     data = _read_bundled(name + ".json")
     if data:
-        return json.loads(data.decode("utf-8"))
+        return scoring.validate_result(json.loads(data.decode("utf-8")),
+                                       "bundled reference " + name)
     if arg:
         raise ValueError("no such reference: {!r} (not a file, and not a bundled "
                          "profile{}). Run `agentperf references` to list them.".format(
@@ -100,7 +101,9 @@ def _write_json(doc, path: str) -> None:
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, indent=1, sort_keys=False)
+        # Strict: a non-finite measurement must fail loudly, never land
+        # in a result file as a bare NaN/Infinity token.
+        json.dump(doc, fh, indent=1, sort_keys=False, allow_nan=False)
         fh.write("\n")
 
 
@@ -137,7 +140,9 @@ def _all_bundled_references():
     for profile in index.get("profiles", []):
         raw = _read_bundled(profile["file"])
         if raw:
-            docs.append(json.loads(raw.decode("utf-8")))
+            docs.append(scoring.validate_result(
+                json.loads(raw.decode("utf-8")),
+                "bundled reference " + profile["file"]))
     return docs
 
 
@@ -148,6 +153,21 @@ def cmd_run(args) -> int:
         args.profile = "quick"
     json_stdout = getattr(args, "json", None) == "-"
     say = _say_err if json_stdout else _say
+    # Resolve the scoring baseline before measuring anything: a missing
+    # bundled default must fail clearly up front, never turn the run's
+    # own result into a silent self-reference afterwards. Measuring
+    # without scoring is an explicit opt-in (--no-reference).
+    no_reference = getattr(args, "no_reference", False)
+    if no_reference and args.ref:
+        raise ValueError("--ref and --no-reference cannot be used together")
+    if no_reference and getattr(args, "html", None):
+        raise ValueError("--html needs a reference; drop --no-reference or --html")
+    reference = None if no_reference else _load_reference(args.ref)
+    if reference is None and not no_reference:
+        raise ValueError(
+            "no reference found: the bundled default reference is missing "
+            "(broken install?). Pass --ref with a reference name or result "
+            "JSON, or --no-reference to measure without scoring.")
     workdir = os.path.abspath(os.path.expanduser(args.workdir or default_workdir()))
     exclude = _split(args.exclude) or []
     if args.no_network:
@@ -164,7 +184,6 @@ def cmd_run(args) -> int:
     safe_label = "".join(c if c.isalnum() or c in "._-" else "-" for c in str(result["label"]))
     out = args.out or "agentperf-{}-{}.json".format(safe_label.strip("-") or "result", stamp)
     _write_json(result, out)
-    reference = _load_reference(args.ref)
     html_path = getattr(args, "html", None)
     written_html = None
     if html_path and reference:
@@ -189,9 +208,8 @@ def cmd_report(args) -> int:
     result = scoring.load(args.result)
     reference = _load_reference(args.ref)
     if reference is None:
-        print("error: no reference found. Pass --ref with a reference name or result JSON.",
-              file=sys.stderr)
-        return 2
+        raise ValueError("no reference found. Pass --ref with a reference "
+                         "name or result JSON.")
     json_stdout = getattr(args, "json", None) == "-"
     html_path = args.html or (os.path.splitext(args.result)[0] + "-report.html")
     from .report_html import write_report
@@ -261,6 +279,7 @@ def cmd_doctor(args) -> int:
     system = env.collect(probe_dir)
     probe_keys = ("cpu_model", "os_version", "logical_cpus", "ram_gb", "fs_type",
                   "disk_free_gb", "power_source", "power_plan", "governor",
+                  "low_power_mode",
                   "defender_realtime", "dev_drive", "rotational", "raid_resync",
                   "workdir_on_windows_drive", "workdir_in_icloud")
     checks = []
@@ -268,9 +287,7 @@ def cmd_doctor(args) -> int:
     if free is not None and free < MIN_FREE_GB:
         checks.append("only {:.1f} GB free on the work disk; a run needs {:.1f} GB and will stop".format(
             free, MIN_FREE_GB))
-    from .runner import _legacy_agentperf_dir
-    if os.path.isdir(workdir) and os.listdir(workdir) and not workdir_owned(workdir) \
-            and not _legacy_agentperf_dir(workdir):
+    if os.path.isdir(workdir) and os.listdir(workdir) and not workdir_owned(workdir):
         checks.append("workdir {} is not empty and was not created by agentperf; a run "
                       "will refuse it (it deletes its own corpus/repo/scratch inside). "
                       "Pick an empty directory or the default.".format(_tilde(workdir)))
@@ -297,6 +314,9 @@ def cmd_doctor(args) -> int:
                       "you plan to compare".format(load[0], cpus))
     if system.get("power_source") == "battery":
         checks.append("running on battery: plug in power for stable numbers")
+    if system.get("low_power_mode"):
+        checks.append("Low Power Mode is on: it slows the CPU; turn it off "
+                      "for a comparable run")
     json_stdout = getattr(args, "json", None) == "-"
     if not json_stdout:
         print("agentperf {} (suite {}) on {} (Python {})".format(
@@ -348,9 +368,16 @@ def cmd_compare(args) -> int:
     reference = _load_reference(args.ref)
     json_stdout = getattr(args, "json", None) == "-"
     if reference is None:
+        if not getattr(args, "self_reference", False):
+            raise ValueError(
+                "no reference found: the bundled default reference is "
+                "missing (broken install?). Pass --ref with a reference "
+                "name or result JSON, or --self-reference to score the "
+                "first result against itself.")
         reference = results[0]
         if not json_stdout:
-            print("No reference given; using {} as the reference.\n".format(reference["label"]))
+            print("Using {} as its own reference (--self-reference).\n".format(
+                reference["label"]))
     weights = scoring.equal_category_weights() if getattr(args, "weights", "default") == "equal" else None
     if args.html:
         from .report_html import write_html
@@ -375,6 +402,22 @@ def _check_combinable(docs, what: str) -> None:
     for benchmarks present in more than one file — definition, unit, and
     measurement method. Without this, a combined file can hide a mixture
     that later comparability checks cannot detect."""
+    # Each input's stored fingerprint must match its own contents
+    # first: combining must never launder a corrupt or edited file
+    # into a fresh-looking valid one.
+    for doc in docs:
+        stored = doc.get("fingerprint")
+        if stored and doc.get("benchmarks"):
+            try:
+                recomputed = scoring.fingerprint(doc)
+            except Exception:
+                recomputed = None
+            if recomputed is not None and stored != recomputed:
+                raise ValueError(
+                    "an input's stored fingerprint ({}) does not match its "
+                    "contents ({}): the file was edited or written under a "
+                    "different scoring config; refusing to {} it".format(
+                        stored, recomputed, what))
     def machine(doc):
         system = doc.get("system") or {}
         return (system.get("cpu_model"), system.get("os_family"))
@@ -403,6 +446,8 @@ def _check_combinable(docs, what: str) -> None:
             or (d.get("tool_versions") or {}).get("bash") for d in docs])),
         ("recorded scoring config", distinct([
             repr(sorted(scoring._weights_for(d).items())) for d in docs])),
+        ("shell environment policy", distinct([
+            scoring.shell_env_policy(d) for d in docs])),
     ]
     for name, values in checks:
         if len(values) > 1:
@@ -453,7 +498,11 @@ def combine_runs(docs):
         entry["runs"] = len(runs)
         entry["noisy"] = stats["cv"] > 0.15
     combined["combined_runs"] = [{"run_id": d.get("run_id"), "started_at": d.get("started_at")} for d in docs]
-    combined["scoring_config"] = scoring.scoring_config_snapshot()
+    # Preserve the inputs' agreed recorded scoring config (combinability
+    # already refused differing configs); never silently substitute
+    # today's default weights.
+    combined["scoring_config"] = scoring.scoring_config_snapshot(
+        scoring._weights_for(docs[0]))
     combined["fingerprint"] = scoring.fingerprint(combined)
     return combined
 
@@ -538,7 +587,19 @@ def cmd_remote(args) -> int:
             code = code or 1
         else:
             results = [scoring.load(p) for p in fetched]  # type: ignore[union-attr]
-            reference = _load_reference(getattr(args, "ref", None)) or results[0]
+            reference = _load_reference(getattr(args, "ref", None))
+            if reference is None and getattr(args, "self_reference", False):
+                reference = results[0]
+            if reference is None:
+                summary["compare_error"] = (
+                    "no reference found for --compare; pass --ref or "
+                    "--self-reference")
+                print("error: " + summary["compare_error"], file=sys.stderr)  # type: ignore[operator]
+                code = code or 1
+                if getattr(args, "json", None):
+                    from .summary import emit
+                    emit(summary, args.json, say=say)
+                return code
             from .report_html import write_html
             from .report_text import compare_report
             write_html(results, reference, compare_path)
@@ -582,7 +643,7 @@ def cmd_skill_install(args) -> int:
               "package_version": PACKAGE_VERSION, "project": project,
               "targets": entries}, args.json,
              say=_say_err if json_stdout else print)
-    return 1 if any(e["status"] == "refused" for e in entries) else 0
+    return 1 if any(e["status"] in ("refused", "failed") for e in entries) else 0
 
 
 def cmd_skill_uninstall(args) -> int:
@@ -605,7 +666,7 @@ def cmd_skill_uninstall(args) -> int:
               "package_version": PACKAGE_VERSION, "project": project,
               "targets": entries}, args.json,
              say=_say_err if json_stdout else print)
-    return 1 if any(e["status"] == "refused" for e in entries) else 0
+    return 1 if any(e["status"] in ("refused", "failed") for e in entries) else 0
 
 
 def cmd_skill_path(args) -> int:
@@ -665,6 +726,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="download the pinned ripgrep (and Node if missing) first")
     r.add_argument("--clean", action="store_true", help="delete the work directory afterwards")
     r.add_argument("--ref", help="reference name or result JSON to score against")
+    r.add_argument("--no-reference", action="store_true",
+                   help="measure without scoring against a reference (the result "
+                        "file is still written; no AgentMark is reported)")
     r.add_argument("--runs", type=_positive_int, default=1,
                    help="repeat the suite and keep, per test, the median of the run medians (single runs vary ~10-15%%)")
     _add_json(r)
@@ -673,6 +737,9 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("compare", help="compare result files against a reference")
     c.add_argument("results", nargs="+")
     c.add_argument("--ref", help="reference name or result JSON (default: bundled default)")
+    c.add_argument("--self-reference", action="store_true",
+                   help="if no reference can be loaded, score the first result "
+                        "against itself instead of failing")
     c.add_argument("--html", help="also write a self-contained HTML report")
     c.add_argument("--weights", choices=["default", "equal"], default="default",
                    help="category weights: default, or equal for a sensitivity check")
@@ -750,6 +817,9 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument("--only")
     rm.add_argument("--out-dir", default="results")
     rm.add_argument("--ref", help="reference for --compare (default: bundled default)")
+    rm.add_argument("--self-reference", action="store_true",
+                    help="for --compare: if no reference can be loaded, score "
+                         "the first fetched result against itself")
     rm.add_argument("--compare", metavar="FILE.html",
                     help="after the runs, write one comparison report of the fetched results")
     rm.add_argument("--mode", choices=["run", "live", "doctor"], default="run",
@@ -785,6 +855,20 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _prescan_json(argv) -> Optional[str]:
+    """Best-effort --json destination before parsing, so even an
+    argparse failure can honor the error-summary contract."""
+    for i, token in enumerate(argv):
+        if token == "--":
+            break
+        if token.startswith("--json="):
+            return token.split("=", 1)[1] or "-"
+        if token == "--json":
+            nxt = argv[i + 1] if i + 1 < len(argv) else None
+            return nxt if nxt and not nxt.startswith("-") else "-"
+    return None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -792,7 +876,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     if argv and argv[0] == "remote" and "--" in argv:  # arguments for the remote command
         cut = argv.index("--")
         argv, extra = argv[:cut], argv[cut + 1:]
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        code = int(exc.code or 0) if isinstance(exc.code, int) else 2
+        dest = _prescan_json(argv)
+        if code and dest:
+            try:
+                from .summary import emit, error_summary
+                emit(error_summary(argv[0] if argv else "agentperf",
+                                   "invalid command line (see usage above)",
+                                   code), dest, say=_say_err)
+            except Exception:
+                pass
+        return code
     if extra:
         args.extra = extra
     if not getattr(args, "func", None):
@@ -803,6 +900,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             parser.print_help()
         return 2
+    json_dest = getattr(args, "json", None)
+    command_name = getattr(args, "command", None) or "agentperf"
+    if getattr(args, "skill_command", None):
+        command_name = "skill " + args.skill_command
+
+    def emit_error(message, code) -> None:
+        # The --json contract holds on failure paths too: one JSON
+        # object (the documented error summary), never empty stdout.
+        if not json_dest:
+            return
+        try:
+            from .summary import emit, error_summary
+            emit(error_summary(command_name, str(message), code), json_dest,
+                 say=_say_err)
+        except Exception:
+            pass
+
     try:
         return int(args.func(args) or 0)
     except SystemExit as exc:
@@ -811,20 +925,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         if exc.code is None:
             return 0
         if isinstance(exc.code, int):
+            if exc.code:
+                emit_error("command failed with exit code {}".format(exc.code),
+                           int(exc.code))
             return int(exc.code)
         print("error: {}".format(exc.code), file=sys.stderr)
+        emit_error(exc.code, 1)
         return 1
     except FileNotFoundError as exc:
-        print("error: no such file: {}".format(exc.filename or exc), file=sys.stderr)
+        message = "no such file: {}".format(exc.filename or exc)
+        print("error: {}".format(message), file=sys.stderr)
+        emit_error(message, 2)
         return 2
     except (OSError, ValueError, KeyError) as exc:
         # Expected user-facing failures: unreadable or malformed result files,
         # unwritable output paths, mismatched inputs. Bugs still traceback.
         print("error: {}".format(exc), file=sys.stderr)
+        emit_error(exc, 2)
         return 2
     except KeyboardInterrupt:
         print("\nInterrupted. Partial work files stay under the work directory; "
               "rerun when ready.", file=sys.stderr)
+        emit_error("interrupted", 130)
         return 130
 
 

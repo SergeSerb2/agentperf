@@ -71,9 +71,10 @@ class WorkdirSafetyTest(unittest.TestCase):
     def test_unmatched_selector_fails_before_any_work(self):
         tmp = tempfile.mkdtemp()
         try:
-            with self.assertRaises(SystemExit):
+            # Bad selectors are bad input (exit 2 via the CLI): ValueError.
+            with self.assertRaises(ValueError):
                 runner.run_suite(tmp, only=["process.shel"], log=lambda m: None)
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(ValueError):
                 runner._validate_selectors(None, ["nope"])
         finally:
             shutil.rmtree(tmp)

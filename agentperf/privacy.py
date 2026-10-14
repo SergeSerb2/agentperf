@@ -26,11 +26,15 @@ _DROP_SYSTEM = ("hostname", "workdir", "cwd", "top_processes", "physical_disks",
                 "fs_device", "fs_mount", "model_id")
 
 _HOME_CAPTURE = [
-    re.compile(r"/Users/([^/\"'\\\s]+)"),
-    re.compile(r"/home/([^/\"'\\\s]+)"),
+    # POSIX user folders can contain spaces too ("/Users/Alice Smith").
+    re.compile(r"/Users/([^\n\"'/]+?)(?:/|$)"),
+    re.compile(r"/home/([^\n\"'/]+?)(?:/|$)"),
     # A Windows user folder can itself contain spaces ("Alice Smith").
     re.compile(r"[A-Za-z]:\\Users\\([^\\\"'\n]+?)(?:\\|$)"),
     re.compile(r"[A-Za-z]:/Users/([^/\"'\s]+)"),
+    re.compile(r"\\\\([^\\\s\"'/]+)"),          # UNC server name
+    re.compile(r"(?<![\w:])//([^\s\"'/]+)/"),    # //server/share
+    re.compile(r"~([A-Za-z][\w.-]*)[/\\]"),      # ~user/...
 ]
 # Home paths: the subpath under a home directory is private too (client
 # names, project names), so the whole path token is generalized. Volume
@@ -41,12 +45,25 @@ _HOME_CAPTURE = [
 # which can over-scrub words that follow a path in free text; for a
 # privacy filter that is the safe direction.
 _HOME_RE = [
-    (re.compile(r"/Users/[^/\"'\\\s]+(?:/[^\n\"']*)?"), "/Users/<user>"),
-    (re.compile(r"/home/[^/\"'\\\s]+(?:/[^\n\"']*)?"), "/home/<user>"),
+    # UNC paths name a server, a share, and a private folder tree,
+    # in backslash or forward-slash form.
+    (re.compile(r"\\\\[^\n\"']+"), r"\\<host>\<share>"),
+    (re.compile(r"(?<![\w:])//[^\s\"'/]+/[^\n\"']*"), "//<host>/<share>"),
+    # Tilde paths are home paths: "~alice/Secret", "~/Client Plans".
+    (re.compile(r"~[A-Za-z][\w.-]*[/\\][^\n\"']*"), "~<user>"),
+    (re.compile(r"~[/\\][^\n\"']*"), "~<user>"),
+    (re.compile(r"(?<![\w])~[A-Za-z][\w.-]*"), "~<user>"),
+    # The user folder itself may contain spaces, so the whole token to
+    # the next quote or line end is generalized, as with Windows below.
+    (re.compile(r"/Users/[^\n\"']+"), "/Users/<user>"),
+    (re.compile(r"/home/[^\n\"']+"), "/home/<user>"),
+    (re.compile(r"/root(?:/[^\n\"']*)?"), "/root/<user>"),
     (re.compile(r"/Volumes/[^\n\":]+:"), "/Volumes/<volume>:"),
     (re.compile(r"/Volumes/[^\n\"']+"), "/Volumes/<volume>"),
     (re.compile(r"[A-Za-z]:\\Users\\[^\n\"']+"), r"C:\Users\<user>"),
-    (re.compile(r"[A-Za-z]:/Users/[^/\"'\s]+(?:/[^\n\"']*)?"), "C:/Users/<user>"),
+    (re.compile(r"[A-Za-z]:\\Documents and Settings\\[^\n\"']+"), r"C:\Users\<user>"),
+    (re.compile(r"[A-Za-z]:/Users/[^\n\"']+"), "C:/Users/<user>"),
+    (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"), "<email>"),
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
     (re.compile(r"\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b"), "<mac>"),
     (re.compile(r"\b[\w.-]+\.ts\.net\b"), "<host>"),
@@ -89,7 +106,8 @@ def _candidate_names(doc) -> List[str]:
 
     def walk(node):
         if isinstance(node, dict):
-            for value in node.values():
+            for key, value in node.items():
+                walk(key)
                 walk(value)
         elif isinstance(node, list):
             for value in node:
@@ -115,10 +133,52 @@ def _scrub_text(value, names=(), counter=None):
         if counter is not None:
             counter[0] += n
     for name in names:
-        value, n = re.subn(r"\b" + re.escape(name) + r"\b", "<name>", value)
+        # Case variants of a known name are the same name ("ALICE").
+        value, n = re.subn(r"\b" + re.escape(name) + r"\b", "<name>", value,
+                           flags=re.IGNORECASE)
         if counter is not None:
             counter[0] += n
     return value
+
+
+# What must never survive a scrub, placeholder forms excepted. A string
+# still matching one of these after scrubbing is withheld whole: fields
+# the scrubber cannot clean are dropped, never passed through.
+_RESIDUAL_RE = [
+    re.compile(r"\\\\(?!<host>)"),
+    re.compile(r"(?<![\w:])//(?!<host>)[^\s\"'/]+/"),
+    re.compile(r"~[A-Za-z][\w.-]*[/\\]"),
+    re.compile(r"~[/\\]"),
+    re.compile(r"/Users/(?!<user>)"),
+    re.compile(r"/home/(?!<user>)"),
+    re.compile(r"/root/(?!<user>)"),
+    re.compile(r"/Volumes/(?!<volume>)"),
+    re.compile(r"[A-Za-z]:\\Users\\(?!<user>)"),
+    re.compile(r"[A-Za-z]:/Users/(?!<user>)"),
+    re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
+    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    re.compile(r"\b[\w.-]+\.ts\.net\b"),
+]
+
+
+def _withhold_residuals(node, names, counter):
+    """Replace any string that still looks identifying with <withheld>."""
+    if isinstance(node, dict):
+        return {_withhold_residuals(k, names, counter):
+                _withhold_residuals(v, names, counter)
+                for k, v in node.items()}
+    if isinstance(node, list):
+        return [_withhold_residuals(v, names, counter) for v in node]
+    if not isinstance(node, str):
+        return node
+    lowered = node.lower()
+    bad = any(rx.search(node) for rx in _RESIDUAL_RE) or \
+        any(len(name) >= 3 and name.lower() in lowered for name in names) or \
+        _scrub_ipv6(node) != node
+    if bad:
+        counter[0] += 1
+        return "<withheld>"
+    return node
 
 
 def _generic_label(doc: Dict[str, object]) -> str:
@@ -197,16 +257,25 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
                 if k == "run_id":
                     nested_ids[0] += 1
                     continue
+                # Keys carry text too (a path can be a key); scrub them.
+                clean_key = _scrub_text(k, names, counter)
                 if k == "started_at" and isinstance(v, str):
-                    out_dict[k] = v[:10]
+                    out_dict[clean_key] = v[:10]
                     continue
-                out_dict[k] = scrub(v)
+                out_dict[clean_key] = scrub(v)
             return out_dict
         if isinstance(node, list):
             return [scrub(v) for v in node]
         return _scrub_text(node, names, counter)
 
     out = scrub(out)
+    # Fail closed: anything still identifying after the scrub is
+    # withheld whole instead of passing through.
+    withheld = [0]
+    out = _withhold_residuals(out, names, withheld)
+    if withheld[0]:
+        changes.append("withheld {} string(s) that could not be scrubbed "
+                       "clean".format(withheld[0]))
     if nested_ids[0]:
         changes.append("removed {} nested run id(s) and cut nested timestamps "
                        "to the day".format(nested_ids[0]))

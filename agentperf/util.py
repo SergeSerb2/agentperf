@@ -107,8 +107,19 @@ def run_text(argv: Sequence[str], timeout: float = 20.0, **kw) -> str:
 
 
 def rmtree(path: str) -> None:
-    """Delete a tree, clearing read-only bits that git leaves on Windows."""
+    """Delete a tree, clearing read-only bits that git leaves on Windows.
+
+    A link (symlink or junction) at *path* itself is unlinked, never
+    followed: deleting ``scratch`` must not delete whatever a planted
+    link points at."""
     if not os.path.lexists(path):
+        return
+    is_junction = getattr(os.path, "isjunction", lambda _p: False)
+    if os.path.islink(path) or is_junction(path):
+        try:
+            os.remove(path)
+        except OSError:
+            os.rmdir(path)
         return
 
     def retry(func, p, _exc):

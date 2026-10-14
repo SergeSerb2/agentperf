@@ -72,7 +72,7 @@ agentperf remote my-mac linux-box my-pc --mode doctor --json=doctor-fleet.json
 - Busy system (load above half the CPU count) or battery power: warn the user. Offer to wait, or benchmark now and label the numbers as taken under load.
 - Under 1.5 GB free on the work disk: a run will stop. Free space first. Do not delete user files to make room.
 
-`remote --mode doctor` runs the same check on each host in order and fetches nothing. Its summary records one `exit_code` per host. Doctor output streams live, so you can watch each host in turn.
+`remote --mode doctor` runs the same check on each host in order and fetches each host's doctor summary. Read `hosts[].doctor.ok`, `hosts[].doctor.checks`, and `hosts[].doctor.missing_tools` for machine health; `hosts[].exit_code` only says the check itself ran. Doctor output streams live, so you can watch each host in turn.
 
 ## Choosing the run
 
@@ -106,11 +106,11 @@ One machine at a time. Benchmarks notice each other: two runs together read low 
 - Do not benchmark the machine you are running on while a remote run is loading it (the SSH and fetch work is light, but a local `--runs 3` is not).
 - If the user works on a machine mid-run, expect noise. Note it next to that machine's score.
 
-Labels: a run's label names it in every report and in the fetched file name. With `remote`, labels come from host names (`my-mac`, `my-pc-wsl-ubuntu`). `--label` sets one label and works for a single run only. If two runs would share a label, the command refuses before it starts (exit 2). Split the command and set distinct labels.
+Labels: a run's label names it in every report and in the fetched file name. With `remote`, labels come from host names (`my-mac`, `my-pc-wsl-ubuntu`). `--label` sets one label and works for a single run only. If two runs would share a label - or labels that differ only in case, which name the same file on Windows - the command refuses before it starts (exit 2). Split the command and set distinct labels. Labels must also be portable file names: no Windows reserved names (CON, NUL, and friends), no trailing dot.
 
 ## Windows specifics
 
-- agentperf detects a Windows host by probing `uname`. PowerShell over SSH is the supported shell. Git Bash as the SSH shell also works for the POSIX path, but PowerShell is the tested one.
+- agentperf detects a Windows host by probing `uname`. PowerShell over SSH is the supported SSH shell on Windows. A Git Bash (MINGW, MSYS, or CYGWIN) SSH shell is also detected as Windows, so agentperf would send it PowerShell commands: Git Bash is not supported as the SSH shell. Set the host's SSH default shell to PowerShell. Inside a run, Git Bash is still the scored shell.
 - OpenSSH kills the session's processes when the session ends. Keep the `remote` command attached until it returns. Do not detach a benchmark and poll for its file; the process dies with the session.
 - Scheduled tasks run below normal priority. Never benchmark through one. If a user suggests a scheduled task so they can close the laptop, explain the priority problem and offer a shorter `--quick` run instead.
 - Antivirus and the search indexer stay as they are. agentperf measures with them on, because agents work with them on. Report their cost from the causes. Do not offer to disable them. You may explain folder exclusions and Dev Drive as options for the user to weigh.
@@ -164,7 +164,7 @@ Rules:
 - Coverage under about 90% means the score rests on fewer tests. Say which categories are thin.
 - Comparability warnings mean what they say. Different corpus, definitions, methods, or fingerprint: do not compare as equals. Version labels alone never block a comparison; the fingerprint does.
 - Never invent a percentile, a population, or a product name no probe observed.
-- Reach is the network, not the machine. Do not let a fast network flatter a slow disk, or the reverse.
+- Reach measures the network path to the APIs: mostly place and ISP, but the OS network stack is in the path too (on one PC, native Windows can beat WSL2 because WSL2 traffic crosses a virtual network). Do not let a fast network flatter a slow disk, or the reverse.
 
 ## Privacy
 
@@ -196,10 +196,10 @@ Machine output, so you never scrape text:
 - `run`, `report`: summary with `agentmark`, `agentmark_ci`, `coverage`, `reach`, `lw100_seconds`, `verdict`, `top_causes`, `findings`, `result_file`, `html_file`.
 - `compare`: summary with `machines[]` (`agentmark`, `agentmark_common`, `coverage`, `categories`, warnings).
 - `doctor`: summary with `ok`, `checks`, `tools`, `missing_tools`.
-- `remote`: summary with `hosts[]` (`host`, `wsl`, `label`, `exit_code`, `result_file`, `error`), `results`, `compare_html`, and `comparison` when `--compare` ran.
+- `remote`: summary with `hosts[]` (`host`, `wsl`, `label`, `exit_code`, `result_file`, `error`, and `doctor` in doctor mode), `results`, `compare_html`, and `comparison` when `--compare` ran.
 - `skill install` / `uninstall` / `path`: summary with per-target `path` and `status` (or `state` for `path`).
 
-Every summary carries `command` and `summary_version`. Full field lists live in `docs/result-schema.md`. With `--json=-`, stdout holds only the JSON; progress moves to stderr.
+Every summary carries `command` and `summary_version`. Full field lists live in `docs/result-schema.md`. With `--json=-`, stdout holds only the JSON; progress moves to stderr. When a command with `--json` fails, stdout (or the file) still holds one JSON object: an error summary with `ok: false`, `error`, and `exit_code`.
 
 ## Troubleshooting
 

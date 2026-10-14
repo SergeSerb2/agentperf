@@ -3302,6 +3302,10 @@
   "diag.clone_copy": "file system has no copy-on-write clones"
  },
  "fingerprint": "7cb307228c8fad56",
+ "measurement_env": {
+  "shell_launch": "sanitized-equivalent (measured with suite 0.3.0 before sanitization was recorded; BASH_ENV, ENV, SHELLOPTS, BASHOPTS, and NODE_OPTIONS verified unset on the measuring machine, so scored launches did the same work as sanitized launches)",
+  "node_spawn_diagnostic": "sanitized-equivalent (measured with suite 0.3.0 before sanitization was recorded; BASH_ENV, ENV, SHELLOPTS, BASHOPTS, and NODE_OPTIONS verified unset on the measuring machine, so scored launches did the same work as sanitized launches)"
+ },
  "combined_runs": [
   {
    "started_at": "2026-10-13"

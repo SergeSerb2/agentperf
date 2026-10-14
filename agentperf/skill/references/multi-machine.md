@@ -31,7 +31,7 @@ Rules for the flags:
 - `--wsl HOST:DISTRO` adds one WSL run on that host. You may repeat it. WSL runs come after the positional hosts, in the order given.
 - `--wsl DISTRO` without a host works only with exactly one host. It means: run that host inside the distro, and do not run it natively.
 - `--label` works for a single run only. With several runs, labels come from the host names. A WSL run is `host-wsl-distro`, with the distro in lower case.
-- If two runs would get the same label, the command stops with exit code 2. Run the hosts in separate commands with distinct `--label` values.
+- If two runs would get the same label - including labels that differ only in case, which name the same file on Windows - the command stops with exit code 2 before anything runs. Run the hosts in separate commands with distinct `--label` values. Labels must be portable file names: no Windows reserved names (CON, NUL, and friends), no trailing dot.
 - `--compare FILE.html` writes one comparison after the runs. It needs at least one fetched result.
 - `--out-dir` says where fetched results land. The default is `results/`.
 - Arguments after `--` go to the remote command. Prefer the named flags. They are checked; raw extras are not.
@@ -44,6 +44,7 @@ Read the `--json` summary. Its `hosts` list has one entry per run, in run order:
 - `exit_code`: the remote command's exit code, or `null` if setup failed.
 - `result_file`: the fetched result path, or `null`.
 - `error`: the setup failure, or `null`.
+- `doctor` (doctor mode only): that host's doctor summary. Read `doctor.ok`, `doctor.checks`, and `doctor.missing_tools` for machine health. `exit_code` 0 only means the check ran; it never means the machine is well.
 
 `results` lists the fetched files. `compare_html` is the comparison path, or `null`. When you asked for `--compare`, `comparison.machines` holds the scored rows. Rank on `agentmark_common`. It uses only the tests every machine ran.
 

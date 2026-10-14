@@ -76,6 +76,25 @@ def _group_alive(pgid):
         return False
 
 
+def _cleanup_group(proc):
+    """Kill whatever the harness left running, on every exit path.
+
+    Called after normal exit, error exit, timeout, and interruption,
+    always before verification or fixture deletion can touch the same
+    files. On POSIX the harness is a session leader, so its process
+    group (id = its pid) is the owned unit even after it exits. On
+    Windows there is no process group to signal once the parent has
+    exited: ``taskkill /T`` needs a live root pid, so descendants that
+    outlive an exited harness cannot be found this way (a stated
+    limitation; see SECURITY.md)."""
+    if os.name == "nt":
+        if proc.poll() is None:
+            _kill_tree(proc)
+        return
+    if _group_alive(proc.pid):
+        _kill_tree(proc)
+
+
 def _kill_tree(proc, grace_s=3.0):
     """Terminate the whole process tree, then reap the direct child.
 
@@ -175,13 +194,29 @@ def run_streamed(harness, cmd, prompt, cwd, timeout):
     reader.daemon = True
     writer.start()
     reader.start()
+    interrupted = False
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         result["error"] = "timed out after %s s" % timeout
-        _kill_tree(proc)
+    except KeyboardInterrupt:
+        interrupted = True
+    # Every path - normal exit included - cleans up the owned process
+    # group before anything verifies or deletes the fixture. A harness
+    # that exits 0 while a tool subprocess keeps running must not
+    # leave that subprocess behind.
+    _cleanup_group(proc)
+    if interrupted:
+        err_file.close()
+        raise KeyboardInterrupt
     wall = time.monotonic() - t0
     reader.join(timeout=10)
+    for stream in (proc.stdout, proc.stdin):
+        try:
+            if stream is not None:
+                stream.close()
+        except (OSError, ValueError):
+            pass
 
     err_file.seek(0)
     lines = [ln for ln in err_file.read().splitlines() if "stale arg0" not in ln]

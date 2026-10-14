@@ -10,6 +10,7 @@ post). See docs/result-schema.md for the field reference.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from typing import Callable, Dict, List, Optional
@@ -32,6 +33,33 @@ def _interval(ci) -> Optional[List[float]]:
     if not ci:
         return None
     return [_marks(ci[0]), _marks(ci[1])]
+
+
+def _lw100_fields(lw) -> Dict[str, object]:
+    """LW100 coverage disclosure: which parts the seconds cover or omit.
+
+    The human reports have always named this; a bare seconds number in
+    JSON would present a partial mix as the whole wait."""
+    return {
+        "lw100_covered_components": [line["label"] for line in lw["lines"]],
+        "lw100_missing_components": list(lw["missing"]),
+    }
+
+
+def error_summary(command: str, message: str, exit_code: int) -> Dict[str, object]:
+    """The documented failure object for --json paths.
+
+    Emitted instead of a result summary when a command fails, so a
+    caller reading stdout or the summary file always gets one JSON
+    object, never an empty stream."""
+    return {
+        "command": command,
+        "summary_version": SUMMARY_VERSION,
+        "package_version": PACKAGE_VERSION,
+        "ok": False,
+        "error": message,
+        "exit_code": exit_code,
+    }
 
 
 def result_summary(result, reference, result_path: Optional[str] = None,
@@ -62,11 +90,13 @@ def result_summary(result, reference, result_path: Optional[str] = None,
         "findings": advise(result),
     }
     if reference is None:
+        lw_only = scoring.lw100(result)
         doc.update({"reference": None, "agentmark": None, "reach": None,
-                    "lw100_seconds": _num(scoring.lw100(result)["seconds"]),
+                    "lw100_seconds": _num(lw_only["seconds"]),
                     "verdict": diagnose.verdict(None, system.get("os_family")),
                     "top_causes": [], "biggest_drag": None,
                     "comparability_warnings": []})
+        doc.update(_lw100_fields(lw_only))
         return doc
     sc = scoring.score(result, reference)
     lw, ref_lw = scoring.lw100_common(result, reference)
@@ -97,6 +127,7 @@ def result_summary(result, reference, result_path: Optional[str] = None,
         } for c in major[:3]],
         "minor_causes": [c["topic"] for c in minor],
     })
+    doc.update(_lw100_fields(lw))
     return doc
 
 
@@ -114,16 +145,19 @@ def compare_summary(results, reference, category_weights=None,
         full = scoring.score(doc, reference, category_weights=category_weights)
         same = scoring.score(doc, reference, restrict=common,
                              category_weights=category_weights)
-        machines.append({
+        doc_lw = scoring.lw100(doc, common)
+        machine = {
             "label": doc.get("label"),
             "agentmark": _marks(full.get("agentmark")),
             "coverage": _num(full.get("coverage")),
             "agentmark_common": _marks(same.get("agentmark")),
             "reach": _marks(full.get("reach")),
-            "lw100_common_seconds": _num(scoring.lw100(doc, common)["seconds"]),
+            "lw100_common_seconds": _num(doc_lw["seconds"]),
             "categories": {k: _marks(v) for k, v in (full.get("categories") or {}).items()},
             "comparability_warnings": scoring.compatibility_warnings(doc, reference),
-        })
+        }
+        machine.update(_lw100_fields(doc_lw))
+        machines.append(machine)
     return {
         "command": "compare",
         "summary_version": SUMMARY_VERSION,
@@ -137,16 +171,35 @@ def compare_summary(results, reference, category_weights=None,
     }
 
 
+def _assert_finite(node, where: str = "summary") -> None:
+    """Reject NaN/Infinity anywhere in a summary before serialization.
+
+    Python's json would otherwise write them as bare ``NaN`` /
+    ``Infinity`` tokens, which are not JSON and break strict parsers."""
+    if isinstance(node, float):
+        if not math.isfinite(node):
+            raise ValueError("non-finite number in {}".format(where))
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            _assert_finite(value, "{}.{}".format(where, key))
+    elif isinstance(node, (list, tuple)):
+        for i, value in enumerate(node):
+            _assert_finite(value, "{}[{}]".format(where, i))
+
+
 def emit(doc: Dict[str, object], dest: Optional[str],
          say: Callable[[str], None] = print) -> None:
     """Write a summary to a file, or to stdout when *dest* is ``-``.
 
     Callers that pass ``-`` keep stdout clean (human progress goes to
     stderr), so the JSON is the only thing on stdout and always parses.
+    Serialization is strict: a non-finite number raises instead of
+    writing invalid JSON.
     """
     if not dest:
         return
-    text = json.dumps(doc, indent=2) + "\n"
+    _assert_finite(doc)
+    text = json.dumps(doc, indent=2, allow_nan=False) + "\n"
     if dest == "-":
         sys.stdout.write(text)
         return

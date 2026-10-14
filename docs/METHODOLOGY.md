@@ -89,7 +89,10 @@ fast as that setup at this local work, nothing more.
   uses there. Scoring `/bin/sh` would score dash on Ubuntu against bash
   elsewhere. Builds still differ (macOS ships bash 3.2; current Linux ships
   5.x), and the version is recorded. Where no bash exists, the tests fall
-  back to `sh` and record that, so reports can warn.
+  back to `sh` and record that, so reports can warn. The startup policy is
+  itself part of method compatibility: a result measured with inherited
+  startup variables (or an old result whose policy is unknown) warns
+  against a sanitized one, because a startup file could have been timed.
 - **Tools that still differ.** Part of any gap can be the tools, not the
   hardware: `search.grep` uses each OS's own grep (GNU grep on Linux and in
   Git for Windows, BSD grep on macOS); `process.exec` runs `true` on Unix and

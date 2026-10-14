@@ -369,9 +369,8 @@ class RemoteOrchestrationTest(unittest.TestCase):
             proc = Proc()
             proc.returncode = 0
             if len(argv) >= 3 and ":" in str(argv[-2]):  # scp fetch: write the doc
-                host = str(argv[-2]).split(":", 1)[0]
                 for label, doc in fetched_docs.items():
-                    if str(argv[-1]).endswith(label + ".json"):
+                    if label in str(argv[-2]) or str(argv[-1]).endswith(label + ".json"):
                         with open(argv[-1], "w", encoding="utf-8") as fh:
                             json.dump(doc, fh)
                         break
@@ -384,7 +383,10 @@ class RemoteOrchestrationTest(unittest.TestCase):
         return code, summary, order
 
     def _doc(self, label):
-        return {"label": label, "benchmarks": {}, "skipped": {}, "system": {},
+        # Round 7: an empty benchmarks object is not a successful fetch.
+        return {"label": label,
+                "benchmarks": {"process.shell": {"median": 1.0}},
+                "skipped": {}, "system": {},
                 "schema": 1, "corpus": {"fixture_hash": "h"}}
 
     def test_hosts_run_in_order_and_all_fetch(self):
@@ -419,14 +421,19 @@ class RemoteOrchestrationTest(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertEqual(summary["hosts"][0]["exit_code"], 3)
 
-    def test_doctor_mode_fetches_nothing(self):
+    def test_doctor_mode_fetches_the_summary_not_a_result(self):
+        # Round 7: remote doctor carries each host's health summary.
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, True)
         args = _remote_args(hosts=["solo"], out_dir=tmp, mode="doctor")
-        code, summary, order = self._run_with_fake_ssh(args, {}, {})
+        doctor = {"command": "doctor", "ok": True, "checks": [],
+                  "missing_tools": []}
+        code, summary, order = self._run_with_fake_ssh(
+            args, {}, {"solo": doctor})
         self.assertEqual(code, 0)
         self.assertEqual(summary["results"], [])
         self.assertIsNone(summary["hosts"][0]["result_file"])
+        self.assertIs(summary["hosts"][0]["doctor"]["ok"], True)
 
 
 class ScoresUnchangedTest(unittest.TestCase):

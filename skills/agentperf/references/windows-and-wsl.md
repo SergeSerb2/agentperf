@@ -2,7 +2,7 @@
 
 ## Windows over SSH
 
-agentperf supports Windows hosts whose SSH shell is PowerShell. It detects the host type itself. You do not need to say which is which.
+agentperf supports Windows hosts whose SSH shell is PowerShell. It detects the host type itself. You do not need to say which is which. A Git Bash (MINGW, MSYS, or CYGWIN) SSH shell is also detected as Windows, so agentperf would send it PowerShell commands: Git Bash is not supported as the SSH shell. Set the host's SSH default shell to PowerShell. Inside a run, Git Bash is still the scored shell.
 
 Keep these facts in mind:
 
@@ -32,4 +32,4 @@ Rules:
 - Without the Xcode Command Line Tools, `/usr/bin/git` is a shim that can pause for a dialog. agentperf probes git before it times it, so a missing install skips the git tests instead of hanging. The fix is `xcode-select --install`. Do not run that install without asking; it opens dialogs and downloads software.
 - Spotlight indexes new files while the benchmark writes thousands of them. If the report blames background load, note it. Adding code folders to Spotlight privacy is the user's choice.
 - A background process stuck near 100% CPU will hold the whole score down. Name it from the findings. Suggest a restart of that process. Do not kill processes you did not start.
-- On battery, numbers move. `doctor` warns. Ask the user to plug in for a number they will compare.
+- On battery, numbers move. Low Power Mode slows the CPU too. `doctor` warns about both. Ask the user to plug in for a number they will compare.

@@ -45,7 +45,8 @@ def _validate_selectors(only: Optional[List[str]], exclude: Optional[List[str]])
     for kind, patterns in (("--only", only or []), ("--exclude", exclude or [])):
         for pattern in patterns:
             if not any(fnmatch.fnmatch(i, pattern) or i.startswith(pattern + ".") for i in ids):
-                raise SystemExit(
+                # A bad selector is bad input: exit code 2, as documented.
+                raise ValueError(
                     "{} selector {!r} matches no benchmark. Run `agentperf list` "
                     "to see the ids and categories.".format(kind, pattern))
 
@@ -61,37 +62,8 @@ _OWNED_ENTRIES = ("corpus", "repo", "scratch", "corpus.tar.gz", "empty.gitconfig
 
 
 def workdir_owned(workdir: str) -> bool:
-    return os.path.isfile(os.path.join(workdir, MARKER_NAME))
-
-
-def _legacy_agentperf_dir(workdir: str) -> bool:
-    """True for a work directory made by agentperf before ownership markers.
-
-    A JSON file that merely looks like a manifest proves nothing: anyone
-    can write one, and claiming the directory would let a run delete an
-    unrelated ``repo/`` next to it. The corpus must validate in full -
-    every listed file present, re-hashed, matching the recorded fixture
-    hash and byte total - exactly as a cached corpus must to be reused,
-    and the directory must hold nothing outside agentperf's own entries.
-    """
-    try:
-        probe = Corpus(os.path.join(workdir, "corpus"))
-        if not probe._load():
-            return False
-    except Exception:
-        return False
-    import re as _re
-    try:
-        names = os.listdir(workdir)
-    except OSError:
-        return False
-    for name in names:
-        if name in _OWNED_ENTRIES or name == LOCK_NAME:
-            continue
-        if _re.fullmatch(r"corpus-[0-9a-f]{16}\.tar\.gz(?:\.part)?", name):
-            continue
-        return False
-    return True
+    marker = os.path.join(workdir, MARKER_NAME)
+    return os.path.isfile(marker) and not os.path.islink(marker)
 
 
 def _record_owned_archive(workdir: str, name: str) -> None:
@@ -100,6 +72,8 @@ def _record_owned_archive(workdir: str, name: str) -> None:
     name = os.path.basename(name)
     try:
         path = os.path.join(workdir, ARCHIVES_NAME)
+        if os.path.islink(path):
+            return  # never append through a planted link
         existing = []
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as fh:
@@ -112,21 +86,17 @@ def _record_owned_archive(workdir: str, name: str) -> None:
 
 
 def _owned_archives(workdir: str):
-    """Archive file names agentperf itself generated in *workdir*:
-    the ones it recorded, plus the archive named by the corpus
-    manifest's fixture hash. Any other ``corpus-*.tar.gz`` (a user's
-    backup, say) is not owned and is never deleted."""
-    import json as _json
+    """Archive file names agentperf recorded generating in *workdir*.
+
+    The generation ledger is the only evidence of ownership. A corpus
+    manifest's fixture hash is never enough: anyone can write a manifest
+    naming a victim archive, and cleanup would delete a file agentperf
+    may never have made. Any ``corpus-*.tar.gz`` not in the ledger (a
+    user's backup, say) is not owned and is never deleted."""
     import re as _re
     owned = set()
-    try:
-        with open(os.path.join(workdir, "corpus", "corpus.json"), encoding="utf-8") as fh:
-            data = _json.load(fh)
-        fixture_hash = str(data.get("fixture_hash") or "")
-        if _re.fullmatch(r"[0-9a-f]{16}", fixture_hash):
-            owned.add("corpus-{}.tar.gz".format(fixture_hash))
-    except (OSError, ValueError, AttributeError):
-        pass
+    if os.path.islink(os.path.join(workdir, ARCHIVES_NAME)):
+        return owned  # a linked ledger is not trustworthy evidence
     try:
         with open(os.path.join(workdir, ARCHIVES_NAME), encoding="utf-8") as fh:
             for line in fh:
@@ -148,14 +118,16 @@ def prepare_workdir(workdir: str) -> None:
     """
     if os.path.exists(workdir) and not os.path.isdir(workdir):
         raise SystemExit("--workdir {} exists and is not a directory.".format(workdir))
-    if os.path.isdir(workdir) and not workdir_owned(workdir) and _legacy_agentperf_dir(workdir):
-        pass  # a pre-0.3.0 work directory: claim it below by writing the marker
-    elif os.path.isdir(workdir) and not workdir_owned(workdir) and os.listdir(workdir):
+    if os.path.isdir(workdir) and not workdir_owned(workdir) and os.listdir(workdir):
         raise SystemExit(
             "--workdir {} is not empty and was not created by agentperf "
             "(no {} marker). Refusing to use it, because a run deletes its "
             "own corpus, repo, and scratch folders inside the work directory. "
-            "Pick an empty directory, a new path, or the default "
+            "agentperf never adopts an unmarked non-empty directory, even "
+            "one that looks like an old work folder: nothing in it proves a "
+            "repo/ beside the corpus is agentperf's. If this is a work "
+            "folder from an old agentperf version, delete it (it holds only "
+            "regenerable corpus files) or pick the default "
             "(~/.agentperf/work).".format(workdir, MARKER_NAME))
     os.makedirs(workdir, exist_ok=True)
     marker = os.path.join(workdir, MARKER_NAME)
@@ -176,8 +148,7 @@ def _clean_owned(workdir: str) -> None:
     fails harmlessly if a new run has already claimed it.
 
     ``corpus-*.tar.gz`` files are deleted only when agentperf recorded
-    generating them (or the corpus manifest names them); an unknown
-    archive is left alone.
+    generating them in its ledger; an unknown archive is left alone.
     """
     if not workdir_owned(workdir):
         return
@@ -360,10 +331,11 @@ def _run_locked(workdir: str, profile: str, label: Optional[str],
     }
     from . import scoring
     from .util import NODE_ENV_REMOVED, SHELL_ENV_REMOVED
-    # The environment policy is measurement metadata, recorded outside
-    # the scored-definition fingerprint: on a machine where none of
-    # these variables is set, a sanitized launch does the same work as
-    # an unsanitized one, so suite 0.3.0 results stay comparable.
+    # The environment policy is measurement method, checked by
+    # compatibility_warnings alongside the per-benchmark methods: a
+    # result recorded as sanitized (or verified sanitized-equivalent)
+    # compares cleanly, an unknown old policy warns. The fingerprint
+    # formula itself is unchanged, so no stored fingerprint moves.
     doc["measurement_env"] = {
         "shell_launch": "sanitized (removed: {})".format(", ".join(SHELL_ENV_REMOVED)),
         "node_spawn_diagnostic": "sanitized (removed: {})".format(

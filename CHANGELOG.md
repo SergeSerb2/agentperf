@@ -11,8 +11,12 @@ change that moves scores bumps the minor version and says what moved.
 Teach coding agents to run agentperf well. **Scores do not move in this
 release**: the suite stays 0.3.0, the measurement fingerprint is unchanged,
 and every bundled profile scores exactly as in 0.3.0 (WSL2 anchor 1000,
-Windows native 103, M1 Pro 398, M5 Pro 408). Scores from 0.4.0 compare
-directly with 0.3.0 scores.
+Windows native 103, M1 Pro 398, M5 Pro 408). One comparability caveat,
+stated plainly: scored shell launches are now sanitized (see below), and
+that policy is part of method compatibility. Old files with no recorded
+shell policy warn against new ones, because their equivalence is unproven
+in general; the bundled machines whose settings were checked record it as
+established (see the shell note).
 
 - **An Agent Skill and an operator guide.** `skills/agentperf/` holds a
   short procedural skill plus references for multi-machine runs, Windows
@@ -24,7 +28,9 @@ directly with 0.3.0 scores.
   (`~/.codex/skills`), and shared (`~/.agents/skills`) folders, or into a
   repo with `--project`. Each copy carries a hash manifest; a copy you
   edited is never replaced or removed without `--force`, and your extra
-  files survive a forced install. The repo is also a Claude Code plugin
+  files survive a forced install and a forced uninstall alike (only the
+  known skill files are ever written or removed, never through a symlink
+  or junction, and `--force` does not widen that). The repo is also a Claude Code plugin
   marketplace (`/plugin marketplace add SergeSerb2/agentperf`, then
   `/plugin install agentperf`).
 - **Several machines in one command.** `remote` takes many hosts and runs
@@ -52,19 +58,26 @@ directly with 0.3.0 scores.
 - **Fixes from an independent verification of 0.3.0.** Point scores do not
   move; combined-run intervals do (see the bootstrap note), because the old
   ones were too narrow.
-  - Work-folder safety, tightened again: a pre-marker work folder is now
-    claimed only when its corpus re-hashes to the recorded fixture (a
-    manifest-shaped JSON no longer suffices); `--clean` deletes only
-    corpus archives agentperf recorded generating (an unrelated
-    `corpus-*.tar.gz` is left alone), and the run lock is released last,
-    after all cleanup, with entries removed in a fixed order.
+  - Work-folder safety, tightened again: an unmarked non-empty work
+    folder is never adopted, even one holding a valid corpus (nothing in
+    it proves a `repo/` beside the corpus is agentperf's); delete an old
+    pre-marker work folder or use a fresh path. `--clean` deletes corpus
+    archives only when agentperf's generation ledger recorded making
+    them (a manifest hash alone never owns an archive), and the run lock
+    is released last, after all cleanup, with entries removed in a fixed
+    order.
   - Scored shell starts and the Node spawn diagnostic now run with
     inherited shell-startup variables (`BASH_ENV`, `ENV`, `SHELLOPTS`,
     `BASHOPTS`, and `NODE_OPTIONS` for Node) removed. `--noprofile --norc`
-    alone never stopped bash from reading `BASH_ENV`. The policy is
-    recorded as `measurement_env` metadata. None of the bundled reference
-    machines had any of these set, so 0.3.0 measurements did the same
-    work and the suite stays 0.3.0.
+    alone never stopped bash from reading `BASH_ENV`. The policy is part
+    of method compatibility now, recorded per benchmark and as
+    `measurement_env`: differing policies warn, and old files with no
+    recorded policy warn against new ones. Three bundled machines were
+    checked and had none of these set (the WSL2 anchor, the Windows PC,
+    and the M5 Pro Mac); their profiles record `sanitized-equivalent`,
+    so new results compare to them cleanly. The M1 Pro's machine could
+    not be re-checked, so its profile carries no such claim and warns as
+    unknown. Suite and scores are unchanged either way.
   - The combined-run bootstrap now draws run indices once per round
     across all tests, keeping whole-run correlation (a busy run is slow
     at everything at once). Bundled 90% intervals become: anchor
@@ -83,12 +96,39 @@ directly with 0.3.0 scores.
     coverage in comparisons too; "scored common tests" no longer counts
     diagnostics.
   - `share` now scrubs paths whose segments contain spaces (a volume
-    named "Client Merger Documents", a `C:\Users\Alice Smith` home).
-  - Live mode: timeout cleanup escalates per process group, so a tool
-    subprocess that ignores SIGTERM is killed even after its parent
-    exits; hidden-test verification no longer trusts anything the tested
-    code prints (counts come from an isolated runner outside the repo,
-    immune to `PYTHONPATH` shadow modules).
+    named "Client Merger Documents", a `C:\Users\Alice Smith` home, a
+    spaced `/Users/...` home), UNC paths, `~/` and `~user` paths, email
+    addresses, and case variants of known user/host names, including in
+    keys; a string that still looks identifying afterwards is withheld
+    whole instead of passing through.
+  - Live mode: the harness's whole process group is cleaned up on every
+    exit path (normal, error, timeout, Ctrl-C), before verification or
+    fixture deletion, so a tool subprocess that ignores SIGTERM is
+    killed even after its parent exits (on Windows, a descendant that
+    outlives an exited harness can still survive; there is no process
+    group to signal). Hidden verification no longer runs trusted
+    assertions in the agent's interpreter at all: a subprocess probe
+    only emits the agent function's outputs for fresh inputs, the
+    pass/fail decision is made in agentperf's own process, and a zero
+    verifier exit status is required.
+  - Remote and JSON hardening: one host's operational failure (missing
+    `ssh`, a failed copy) no longer aborts the fleet; fetched results
+    are validated structurally per mode (an empty `benchmarks` is not
+    success) and refused files are deleted locally; `remote --mode
+    doctor` now fetches each host's doctor summary (`hosts[].doctor`),
+    keeping machine health separate from execution success; labels must
+    be portable file names (full-string check, no Windows reserved
+    names or trailing dots) and case-only label collisions are refused
+    before any host runs; every `--json` failure path emits a documented
+    error summary instead of empty output, summaries are strict JSON
+    (no NaN/Infinity), malformed result files are clean exit-2 errors,
+    and bad selectors exit 2 as documented; `combine` validates each
+    input's stored fingerprint before touching it and preserves the
+    recorded scoring weights; a missing default reference fails clearly
+    (self-reference and reference-free runs are explicit opt-ins,
+    `--self-reference` / `--no-reference`); JSON summaries state LW100
+    component coverage; failed skill removals report `failed` and exit
+    nonzero; `doctor` now checks macOS Low Power Mode.
   - Smaller correctness fixes: a failed launch inside the 32-way
     parallel spawn reaps the shells that did start; a cached tool must
     exit 0 to count as working; every network test records its own TLS

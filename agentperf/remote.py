@@ -14,6 +14,7 @@ result came from.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shlex
@@ -27,14 +28,30 @@ from typing import Dict, List, Optional, Tuple
 SSH = ["ssh", "-o", "BatchMode=yes"]
 SCP = ["scp", "-q", "-o", "BatchMode=yes"]
 
-_LABEL_OK = re.compile(r"^[A-Za-z0-9._-]+$")
-_PS_BARE = re.compile(r"^[A-Za-z0-9_.\-/:\\=,]+$")
+_LABEL_OK = re.compile(r"[A-Za-z0-9._-]+")
+_PS_BARE = re.compile(r"[A-Za-z0-9_.\-/:\\=,]+")
+# Names Windows reserves as devices, with or without an extension.
+_WINDOWS_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + ["COM{}".format(i) for i in range(1, 10)]
+    + ["LPT{}".format(i) for i in range(1, 10)])
 
 
 def sanitize_label(label: str) -> str:
-    """Labels land in remote file names and shell commands; keep them tame."""
-    if not _LABEL_OK.match(label or ""):
-        raise SystemExit("label {!r} may only contain letters, digits, '.', '_' and '-'".format(label))
+    """Labels land in remote file names and shell commands; keep them tame
+    and portable: full-string character check (a trailing newline must
+    not slip past), no leading dot or dash, no trailing dot, no Windows
+    reserved device names."""
+    problem = None
+    if not isinstance(label, str) or not label or len(label) > 100 \
+            or not _LABEL_OK.fullmatch(label):
+        problem = "may only contain letters, digits, '.', '_' and '-' (max 100)"
+    elif label[0] in ".-" or label[-1] == ".":
+        problem = "must start with a letter or digit and not end with '.'"
+    elif label.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
+        problem = "is a reserved Windows file name"
+    if problem:
+        raise SystemExit("label {!r} {}".format(label, problem))
     return label
 
 
@@ -50,7 +67,9 @@ def quote_powershell(argv: List[str]) -> str:
     """
     out = []
     for arg in argv:
-        out.append(arg if _PS_BARE.match(arg) else "'" + arg.replace("'", "''") + "'")
+        # fullmatch, not match+$: a trailing newline must force quoting,
+        # never ride into the command line bare.
+        out.append(arg if _PS_BARE.fullmatch(arg) else "'" + arg.replace("'", "''") + "'")
     joined = " ".join(out)
     if out and out[0].startswith("'"):
         joined = "& " + joined
@@ -160,6 +179,16 @@ def parse_targets(args) -> List[Tuple[str, Optional[str], str]]:
     if explicit and len(targets) > 1:
         raise ValueError("--label names one run; with several hosts the labels come "
                          "from the host names (run hosts separately to set labels)")
+    for host, distro in targets:
+        # A host that starts with '-' would be read as an ssh/scp option
+        # (up to local command execution via proxy options), and
+        # whitespace or control characters break command construction.
+        if not host or host.startswith("-") or \
+                any(c.isspace() or ord(c) < 32 for c in host):
+            raise ValueError("invalid SSH host {!r}".format(host))
+        if distro is not None and (not distro or distro.startswith("-") or
+                                   any(ord(c) < 32 for c in distro)):
+            raise ValueError("invalid WSL distro name {!r}".format(distro))
     labelled: List[Tuple[str, Optional[str], str]] = []
     seen: Dict[str, Tuple[str, Optional[str]]] = {}
     for host, distro in targets:
@@ -168,12 +197,17 @@ def parse_targets(args) -> List[Tuple[str, Optional[str], str]]:
             sanitize_label(label)
         except SystemExit as exc:  # a bad --label is bad input (exit 2), not a run failure
             raise ValueError(str(exc.code))
-        if label in seen:
+        # File names derived from labels collide case-insensitively on
+        # Windows (and default macOS) volumes: check before any host runs.
+        key = label.casefold()
+        if key in seen:
             raise ValueError(
-                "hosts {!r} and {!r} would both write result label {!r}; "
-                "run them in separate remote commands with distinct --label values, "
-                "or rename one SSH alias".format(seen[label], (host, distro), label))
-        seen[label] = (host, distro)
+                "hosts {!r} and {!r} would both write result label {!r} "
+                "(labels that differ only in case still name the same file "
+                "on Windows); run them in separate remote commands with "
+                "distinct --label values, or rename one SSH alias".format(
+                    seen[key], (host, distro), label))
+        seen[key] = (host, distro)
         labelled.append((host, distro, label))
     return labelled
 
@@ -197,6 +231,9 @@ def _subcommand(args, label: str, remote_out: str) -> List[str]:
         if args.only:
             sub += ["--only", args.only]
     elif mode == "doctor":
+        # Capture the machine-readable summary: doctor exits 0 even for
+        # an unhealthy machine, so health must travel in the JSON.
+        sub += ["--json=" + remote_out]
         if getattr(args, "workdir", None):
             sub += ["--workdir", args.workdir]
     else:  # live
@@ -206,15 +243,39 @@ def _subcommand(args, label: str, remote_out: str) -> List[str]:
 
 
 def _valid_fetched(doc, label: str, mode: str = "run") -> bool:
-    """A fetched file is this run's result only when it is a result
-    object (not a list, string, or number) with the expected label and
-    the fields its mode writes: a benchmarks object for a suite run, a
-    runs list for live. Anything else is a clean invalid result."""
-    if not isinstance(doc, dict) or doc.get("label") != label:
+    """A fetched file is this run's result only when it is structurally
+    a result of its mode: an object with the expected label and, for a
+    suite run, a non-empty benchmarks object whose entries all carry
+    finite numeric medians (an empty benchmarks object is not success);
+    for live, a non-empty runs list of objects; for doctor, the summary
+    shape (``ok`` plus a checks list, no label check: doctor summaries
+    carry no run label)."""
+    if not isinstance(doc, dict):
+        return False
+    if mode == "doctor":
+        return isinstance(doc.get("ok"), bool) \
+            and isinstance(doc.get("checks"), list)
+    if doc.get("label") != label:
         return False
     if mode == "live":
-        return isinstance(doc.get("runs"), list)
-    return isinstance(doc.get("benchmarks"), dict)
+        runs = doc.get("runs")
+        return isinstance(runs, list) and bool(runs) \
+            and all(isinstance(r, dict) for r in runs)
+    benchmarks = doc.get("benchmarks")
+    if not isinstance(benchmarks, dict) or not benchmarks:
+        return False
+    for entry in benchmarks.values():
+        if not isinstance(entry, dict):
+            return False
+        median = entry.get("median")
+        if isinstance(median, bool) or not isinstance(median, (int, float)) \
+                or not math.isfinite(float(median)):
+            return False
+    return True
+
+
+def _reject_constant(name: str):
+    raise ValueError("non-finite number {!r} in fetched JSON".format(name))
 
 
 def _run_one(host: str, wsl: Optional[str], label: str, args, pyz: str,
@@ -237,7 +298,9 @@ def _run_one(host: str, wsl: Optional[str], label: str, args, pyz: str,
         raise SystemExit("could not copy agentperf.pyz to " + host)
 
     # Unique per invocation: a failed run must never fetch an older result.
-    remote_out = ".agentperf/result-{}-{}.json".format(label, uuid.uuid4().hex[:10])
+    remote_out = ".agentperf/{}-{}-{}.json".format(
+        "doctor" if mode == "doctor" else "result",
+        label, uuid.uuid4().hex[:10])
     sub = _subcommand(args, label, remote_out)
     if wsl:
         python = args.python or "python3"
@@ -255,8 +318,36 @@ def _run_one(host: str, wsl: Optional[str], label: str, args, pyz: str,
     record["exit_code"] = code
     if code != 0:
         say("remote {} on {} exited with code {}".format(mode, host, code))
+    remove_remote = ("Remove-Item -Force " if windows else "rm -f ") + remote_out
     if mode == "doctor":
-        return record  # doctor writes no result file to fetch
+        # Fetch the doctor summary itself: the exit code says the check
+        # ran, the summary's ok/checks say whether the machine is well.
+        record["doctor"] = None
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="agentperf-doctor-", suffix=".json", delete=False)
+        tmp.close()
+        try:
+            got = subprocess.run(
+                SCP + ["{}:{}".format(host, remote_out), tmp.name]).returncode == 0
+            doc = None
+            if got:
+                try:
+                    with open(tmp.name, encoding="utf-8") as fh:
+                        doc = json.load(fh, parse_constant=_reject_constant)
+                except (OSError, ValueError):
+                    doc = None
+            if doc is not None and _valid_fetched(doc, label, "doctor"):
+                record["doctor"] = doc
+                _ssh(host, remove_remote)
+            else:
+                record["error"] = "doctor summary could not be fetched from " + host
+                say("error: {}: {}".format(host, record["error"]))
+        finally:
+            try:
+                os.remove(tmp.name)
+            except OSError:
+                pass
+        return record
 
     os.makedirs(args.out_dir, exist_ok=True)
     local = os.path.join(args.out_dir, "{}{}.json".format(
@@ -266,19 +357,30 @@ def _run_one(host: str, wsl: Optional[str], label: str, args, pyz: str,
         # The fetched file must be this run's result, not something else.
         try:
             with open(local, encoding="utf-8") as fh:
-                doc = json.load(fh)
+                doc = json.load(fh, parse_constant=_reject_constant)
             if not _valid_fetched(doc, label, mode):
                 shown = doc.get("label") if isinstance(doc, dict) else type(doc).__name__
-                say("fetched result is not a valid result for {!r} (got {!r}); "
-                    "refusing it".format(label, shown))
+                say("fetched result is not a valid {} result for {!r} (got {!r}); "
+                    "refusing it".format(mode, label, shown))
+                record["error"] = "fetched result was not a valid {} result".format(mode)
                 fetched = False
         except (OSError, ValueError) as exc:
             say("fetched result is not valid JSON: {}".format(exc))
+            record["error"] = "fetched result was not valid JSON"
             fetched = False
+        if not fetched:
+            # A refused fetch must not linger under the result name,
+            # where a later glob would mistake it for a real result.
+            try:
+                os.remove(local)
+            except OSError:
+                pass
+    elif code == 0:
+        record["error"] = "result could not be fetched from " + host
     if fetched:
         record["result_file"] = os.path.abspath(local)
         say("Fetched {}".format(local))
-        _ssh(host, ("Remove-Item -Force " if windows else "rm -f ") + remote_out)
+        _ssh(host, remove_remote)
     return record
 
 
@@ -317,12 +419,29 @@ def run_remote(args) -> Tuple[int, Dict[str, object]]:
                                 "mode": getattr(args, "mode", "run") or "run",
                                 "exit_code": None, "result_file": None,
                                 "error": str(message)})
+            except (OSError, subprocess.SubprocessError, RuntimeError,
+                    ValueError) as exc:
+                # One host's operational failure (ssh missing, scp
+                # error, local disk full) is that host's result; the
+                # rest of the fleet still runs and the aggregate
+                # summary is still emitted. KeyboardInterrupt is not
+                # caught: it stops the whole command.
+                message = "{}: {}".format(type(exc).__name__, exc)
+                say("error: {}: {}".format(host, message))
+                records.append({"host": host, "wsl": wsl, "label": label,
+                                "mode": getattr(args, "mode", "run") or "run",
+                                "exit_code": None, "result_file": None,
+                                "error": message})
     mode = getattr(args, "mode", "run") or "run"
 
     def ok(rec) -> bool:
+        # Execution success only: doctor machine health lives in each
+        # record's doctor.ok, separate from whether the check ran.
         if rec.get("error") or (rec.get("exit_code") or 0) != 0:
             return False
-        return mode == "doctor" or bool(rec.get("result_file"))
+        if mode == "doctor":
+            return rec.get("doctor") is not None
+        return bool(rec.get("result_file"))
 
     code = 0 if all(ok(r) for r in records) else 1
     for rec in records:  # a remote command's own failure code wins, as before

@@ -8,9 +8,12 @@
   JSON. A run deletes its own `corpus/`, `repo/`, and `scratch/` folders
   inside the work directory, so the directory must be agentperf's own: it is
   marked with a `.agentperf-owned` file, and a non-empty directory without
-  that marker is refused before anything is touched. `--clean` removes only
-  the entries agentperf owns, never anything else you put there. It never
-  modifies your repos.
+  that marker is refused before anything is touched. agentperf never
+  adopts an unmarked non-empty directory, even one that looks like an old
+  work folder. `--clean` removes only the entries agentperf owns,
+  including corpus archives only when its generation ledger recorded
+  making them, never anything else you put there. It never modifies your
+  repos.
 - **System probes are read-only.** CPU, OS, filesystem type, power state,
   running security agents (process names), the busiest processes, load
   average, and similar facts. Nothing needs administrator rights.
@@ -31,8 +34,13 @@
   skill folders (`~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`,
   or the project forms with `--project`). It writes a small manifest with
   file hashes and refuses to replace a copy you edited unless you pass
-  `--force`. It installs no code that runs on its own; the files are
-  instructions your agent reads.
+  `--force`. Install and uninstall touch only the known skill files:
+  manifest entries outside that list are ignored, nothing is written or
+  deleted through a symlink or junction, `--force` never widens that
+  confinement, and a forced uninstall of a copy agentperf did not install
+  removes only the recognized skill files and keeps your other files. It
+  installs no code that runs on its own; the files are instructions your
+  agent reads.
 - **`--json` summaries** are plain JSON views of a result. They are **not**
   anonymized: they carry labels, file paths, and findings from the raw
   result. Keep them as private as the result itself.
@@ -44,6 +52,15 @@
   confined by the prompt to the throwaway fixture copy, but treat
   `bypassPermissions` with the care the name suggests. Use `live --dry-run`
   first. Run copies stay under `~/.agentperf/live` unless you pass `--clean`.
+  When a session ends - normally, on error, on timeout, or on Ctrl-C -
+  agentperf kills the harness's process group before it verifies or
+  deletes anything, so tool subprocesses do not outlive the session. One
+  limit, stated plainly: on Windows there is no process group to signal
+  once the harness itself has exited, so a descendant that outlives an
+  exited Windows harness can survive. Task verification never trusts the
+  agent's interpreter: hidden checks call the agent's code in a
+  subprocess that only emits outputs, and the pass/fail decision is made
+  in agentperf's own process.
 
 ## What a result file contains, and sharing
 
@@ -58,10 +75,13 @@ agentperf share my-result.json
 `share` removes or generalizes: hostname, label, run id (including run ids
 nested inside combined results, at any depth; timestamps there are cut to
 the day), workdir and other home paths including everything under them
-(macOS, Linux, and Windows forms), volume names, process names (kept only
-as counts), security brand names (kept only as detected/active flags), tool
-paths (file names only), and IP/MAC addresses plus user/host names appearing
-in kept free-text fields. It prints every change. One limit: a hardware
+(macOS, Linux, and Windows forms, plus UNC paths and `~/` / `~user` forms,
+and home folder names that contain spaces), volume names, process names
+(kept only as counts), security brand names (kept only as detected/active
+flags), tool paths (file names only), email and IP/MAC addresses, and
+user/host names - in any letter case - appearing in kept free-text fields
+or in keys. A string that still looks identifying after scrubbing is
+withheld whole, never passed through. It prints every change. One limit: a hardware
 serial number typed into a free-text field by hand looks like any other hex
 string and cannot be detected; the fields where the suite itself records
 serial-bearing data are dropped outright. Still read the file once before

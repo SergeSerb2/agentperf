@@ -48,7 +48,6 @@ class WorkdirRound6Test(_Tmp):
             fh.write("mine")
         with open(os.path.join(work, "corpus", "corpus.json"), "w") as fh:
             json.dump({"fixture_hash": "anything", "files": []}, fh)
-        self.assertFalse(runner._legacy_agentperf_dir(work))
         with self.assertRaises(SystemExit):
             runner.prepare_workdir(work)
         with open(keep) as fh:
@@ -70,7 +69,9 @@ class WorkdirRound6Test(_Tmp):
         runner._clean_owned(self.tmp)
         self.assertTrue(os.path.exists(os.path.join(self.tmp, names[0])), names[0])
         self.assertTrue(os.path.exists(os.path.join(self.tmp, names[1])), names[1])
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, names[2])), names[2])
+        # Round 7: a manifest hash alone never owns an archive; only the
+        # generation ledger does, so names[2] now survives too.
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, names[2])), names[2])
         self.assertFalse(os.path.exists(os.path.join(self.tmp, names[3])), names[3])
 
     def test_c3_clean_never_removes_the_lock(self):
@@ -371,8 +372,10 @@ class RemoteRound6Test(unittest.TestCase):
         self.assertFalse(_valid_fetched("result", "host1"))
         self.assertFalse(_valid_fetched({"label": "other", "benchmarks": {}}, "host1"))
         self.assertFalse(_valid_fetched({"label": "host1"}, "host1"))
+        # Round 7: entries need finite medians to count as a result.
         self.assertTrue(_valid_fetched(
-            {"label": "host1", "benchmarks": {"process.shell": {}}}, "host1"))
+            {"label": "host1",
+             "benchmarks": {"process.shell": {"median": 1.0}}}, "host1"))
 
 
 class ReportRound6Test(_Tmp):

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 from typing import Dict, Iterable, List, Optional, Set
 
@@ -34,12 +35,55 @@ LW100_MIX = [
 ]
 
 
+def _finite_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) \
+        and math.isfinite(float(value))
+
+
+def validate_result(doc, source: str = "result") -> Dict[str, object]:
+    """Check a result document's shape before any code trusts it.
+
+    Every benchmark entry needs a finite numeric median; malformed
+    entries (lists, nulls, NaN, strings) are bad input with a clear
+    message, never an AttributeError deep in scoring. Fields agents
+    read as objects must be objects when present."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("benchmarks"), dict):
+        raise ValueError(
+            "not an agentperf result file: {} (no benchmarks object)".format(source))
+    for bid, entry in doc["benchmarks"].items():
+        if not isinstance(entry, dict):
+            raise ValueError(
+                "benchmark {!r} in {} is not an object".format(bid, source))
+        if not _finite_number(entry.get("median")):
+            raise ValueError(
+                "benchmark {!r} in {} has no finite numeric median".format(bid, source))
+        samples = entry.get("samples")
+        if samples is not None and (
+                not isinstance(samples, list)
+                or not all(_finite_number(s) for s in samples)):
+            raise ValueError(
+                "benchmark {!r} in {} has malformed samples".format(bid, source))
+        for key in ("weight", "ops", "cv", "min", "max", "p10", "p90", "n"):
+            if entry.get(key) is not None and not _finite_number(entry[key]):
+                raise ValueError(
+                    "benchmark {!r} in {} has a non-numeric {}".format(
+                        bid, source, key))
+    for key in ("system", "corpus", "skipped", "tools", "tool_versions",
+                "scoring_config", "measurement_env"):
+        if doc.get(key) is not None and not isinstance(doc[key], dict):
+            raise ValueError(
+                "field {!r} in {} is not an object".format(key, source))
+    return doc
+
+
+def _reject_constant(name: str):
+    raise ValueError("non-finite number {!r} is not valid in a result file".format(name))
+
+
 def load(path: str) -> Dict[str, object]:
     with open(path, encoding="utf-8") as fh:
-        doc = json.load(fh)
-    if not isinstance(doc, dict) or not isinstance(doc.get("benchmarks"), dict):
-        raise ValueError("not an agentperf result file: {} (no benchmarks object)".format(path))
-    return doc
+        doc = json.load(fh, parse_constant=_reject_constant)
+    return validate_result(doc, path)
 
 
 def _ratio(entry: Dict[str, object], ref: Dict[str, object], value: Optional[float] = None) -> float:
@@ -129,6 +173,35 @@ def scoring_config_snapshot(category_weights=None) -> Dict[str, object]:
     return {"category_weights": {k: float(v) for k, v in sorted(weights.items())}}
 
 
+def shell_env_policy(doc) -> str:
+    """Effective shell-startup policy a result was measured under.
+
+    One of ``sanitized`` (scored shell launches ran with shell-startup
+    variables removed, or a recorded sanitized-equivalent: measured
+    before the policy was recorded, with those variables verified unset
+    on the measuring machine), ``inherited`` (startup files could run
+    and be timed), or ``unknown`` (nothing recorded: files written
+    before the policy existed, where equivalence cannot be confirmed).
+    The per-benchmark ``env_policy`` note wins over the document-level
+    ``measurement_env`` summary."""
+    benchmarks = (doc or {}).get("benchmarks") or {}
+    for bid in ("process.shell", "process.parallel"):
+        meta = (benchmarks.get(bid) or {}).get("meta") or {}
+        policy = str(meta.get("env_policy") or "").lower()
+        if "sanitized" in policy:
+            return "sanitized"
+        if "inherited" in policy:
+            return "inherited"
+    env = (doc or {}).get("measurement_env")
+    text = " ".join(str(v) for v in env.values()).lower() \
+        if isinstance(env, dict) else str(env or "").lower()
+    if "sanitized" in text:
+        return "sanitized"
+    if "inherited" in text:
+        return "inherited"
+    return "unknown"
+
+
 def _weights_for(doc):
     config = (doc or {}).get("scoring_config") or {}
     recorded = config.get("category_weights")
@@ -210,6 +283,27 @@ def compatibility_warnings(result, reference) -> List[str]:
             extra = (" transfer.read is about 2% of AgentMark; compare that "
                      "test only between machines that used the same cold-read method.")
         warnings.append("measurement methods differ for {}.{}".format(shown, extra))
+    # The shell-startup policy is part of the measurement method: an
+    # inherited BASH_ENV times startup scripts, a sanitized launch
+    # cannot. Two files from before the policy was recorded share the
+    # inherited-era code and do not warn against each other.
+    mine_policy = shell_env_policy(result)
+    theirs_policy = shell_env_policy(reference)
+    if mine_policy != theirs_policy:
+        if "unknown" in (mine_policy, theirs_policy):
+            side = "result" if mine_policy == "unknown" else "reference"
+            warnings.append(
+                "shell environment policy is unknown for the {} (written "
+                "before the policy was recorded): if BASH_ENV or ENV was "
+                "set when it ran, its shell tests timed startup scripts, "
+                "so shell scores may not be the same work as the other "
+                "file's.".format(side))
+        else:
+            warnings.append(
+                "shell environment policies differ (result: {}, reference: "
+                "{}): scored shell launches did different work, so shell "
+                "scores are not strictly comparable.".format(
+                    mine_policy, theirs_policy))
     # A stored fingerprint must match the document it travels with,
     # recomputed under the document's own recorded scoring config.
     for side, doc in (("result", result), ("reference", reference)):
