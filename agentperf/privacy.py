@@ -11,6 +11,7 @@ What is removed or generalized (see SECURITY.md):
 What stays: every measurement, plus generic system facts that explain the
 measurements (CPU model, OS version, filesystem type, core counts, RAM,
 power and indexing flags). A shared result must still explain itself.
+Fields agentperf does not write are dropped, never scrubbed and kept.
 """
 
 from __future__ import annotations
@@ -30,19 +31,21 @@ _HOME_CAPTURE = [
     # ("/Users/Alice Smith", "/Users/O'Brien"). Matching is
     # case-insensitive: "/USERS/..." and "c:/users/..." are the same
     # paths on the filesystems that produce them.
-    re.compile(r"/Users/([^\n\"/]+?)(?:/|$)", re.IGNORECASE),
-    re.compile(r"/home/([^\n\"/]+?)(?:/|$)", re.IGNORECASE),
+    # The name ends at a separator, a double quote, a line end, or the
+    # end of the string; separators may repeat or mix ("C:\Users/Bob").
+    re.compile(r"/Users/+([^\n\"/\\]+?)(?=[/\\\"\n]|$)", re.IGNORECASE),
+    re.compile(r"/home/+([^\n\"/\\]+?)(?=[/\\\"\n]|$)", re.IGNORECASE),
     # A Windows user folder can itself contain spaces ("Alice Smith").
-    re.compile(r"[A-Za-z]:\\Users\\([^\\\"\n]+?)(?:\\|$)", re.IGNORECASE),
-    re.compile(r"[A-Za-z]:/Users/([^/\"\n]+)", re.IGNORECASE),
-    re.compile(r"[A-Za-z]:[\\/]Documents and Settings[\\/]([^\\/\"\n]+?)"
-               r"(?:[\\/]|$)", re.IGNORECASE),
+    re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+([^\\/\"\n]+?)(?=[\\/\"\n]|$)",
+               re.IGNORECASE),
+    re.compile(r"[A-Za-z]:[\\/]+Documents and Settings[\\/]+([^\\/\"\n]+?)"
+               r"(?=[\\/\"\n]|$)", re.IGNORECASE),
     re.compile(r"\\\\([^\\\s\"'/]+)"),          # UNC server name
     re.compile(r"(?<![\w:])//([^\s\"'/]+)/"),    # //server/share
-    # ~user/... with any user name ("~_bob", "~123bob", accented
-    # letters), and a bare ~user that starts with a letter.
+    # ~user/... and a bare ~user, with any user name ("~_bob",
+    # "~123bob", "~.bob", accented letters) that has a letter in it.
     re.compile(r"~([^\s/\\\"~<][^\s/\\\"~]*)[/\\]"),
-    re.compile(r"(?<![\w~])~([^\W\d][\w.-]*)"),
+    re.compile(r"(?<![\w~])~([^\s/\\\"~<]*[^\W\d_][^\s/\\\"~]*)"),
 ]
 # Home paths: the subpath under a home directory is private too (client
 # names, project names), so the whole path token is generalized. Volume
@@ -58,6 +61,11 @@ _HOME_CAPTURE = [
 # words that follow a quoted path is the safe direction (see the
 # residual check, which withholds anything still identifying). Folder
 # names match case-insensitively, as the filesystems treat them.
+_EMAIL = re.compile(r'(?:"[^"\n]*"|[\w.+-]+)@[\w-]+(?:\.[\w-]+)+')
+_IPV4 = re.compile(r"(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9A-Za-z]|\.\d)")
+_MAC = re.compile(r"(?<![0-9A-Za-z])(?:(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}"
+                  r"|[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})(?![0-9A-Za-z])")
+_TSNET = re.compile(r"[\w.-]*\.ts\.net(?![0-9A-Za-z-])", re.IGNORECASE)
 _HOME_RE = [
     # UNC paths name a server, a share, and a private folder tree,
     # in backslash or forward-slash form.
@@ -68,7 +76,7 @@ _HOME_RE = [
     (re.compile(r"~[^\s/\\\"~][^\s/\\\"~]*[/\\][^\n\"]*"), "~<user>"),
     (re.compile(r"~[/\\][^\n\"]*"), "~<user>"),
     (re.compile(r"~<user>[^\s/\\\"]+"), "~<user>"),
-    (re.compile(r"(?<![\w~])~[^\W\d][\w.-]*"), "~<user>"),
+    (re.compile(r"(?<![\w~])~[^\s/\\\"~<]*[^\W\d_][^\s/\\\"~]*"), "~<user>"),
     # The user folder itself may contain spaces, so the whole token to
     # the next quote or line end is generalized, as with Windows below.
     (re.compile(r"/Users/[^\n\"]+", re.IGNORECASE), "/Users/<user>"),
@@ -80,31 +88,67 @@ _HOME_RE = [
      r"C:\Users\<user>"),
     (re.compile(r"[A-Za-z]:[\\/]Documents and Settings[\\/][^\n\"]+",
                 re.IGNORECASE), r"C:\Users\<user>"),
-    (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"), "<email>"),
-    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
-    (re.compile(r"\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b"), "<mac>"),
-    (re.compile(r"\b[\w.-]+\.ts\.net\b", re.IGNORECASE), "<host>"),
+    # Addresses end at anything that is not a letter or digit; an
+    # underscore ("_10.0.0.1_") does not shelter them.
+    (_EMAIL, "<email>"),
+    (_IPV4, "<ip>"),
+    (_MAC, "<mac>"),
+    (_TSNET, "<host>"),
 ]
-# Candidate IPv6 tokens; each is validated with ipaddress so the *whole*
-# address (including its network prefix) is replaced, never a suffix.
-_IPV6_CANDIDATE = re.compile(
-    r"(?<![0-9A-Fa-f:.])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}"
-    r"(?:\.\d{1,3}){0,3}(?![0-9A-Fa-f:.])|::(?:[0-9A-Fa-f]{1,4}:)*[0-9A-Fa-f:]*")
+# Runs of hex digits, colons, and dots that could hold an IPv6 address.
+# A label in front ("ip:fe80::1") or a stray colon must not hide one, so
+# each run is searched for its longest valid address, cut at colons,
+# and the *whole* address (prefix included) is replaced, never a suffix.
+_IPV6_RUN = re.compile(r"[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(?:%[\w.-]+)?")
+
+
+def _ipv6_span(run):
+    """(start, end) of the longest valid IPv6 address in *run*, or None."""
+    starts = [0] + [i + 1 for i, c in enumerate(run) if c == ":"]
+    best = None
+    for i in starts:
+        for j in range(len(run), i + 1, -1):
+            if j < len(run) and run[j] not in ":.%":
+                continue
+            token = run[i:j].rstrip(".")
+            if token.count(":") < 2 or (best and len(token) <= best[1] - best[0]):
+                continue
+            try:
+                addr = ipaddress.ip_address(token.split("%")[0])
+            except ValueError:
+                continue
+            if isinstance(addr, ipaddress.IPv6Address) \
+                    and not (addr.is_unspecified or addr.is_loopback):
+                best = (i, i + len(token))
+                break
+    return best
 
 
 def _scrub_ipv6(value: str, counter=None) -> str:
     def repl(match):
-        token = match.group(0)
-        try:
-            addr = ipaddress.ip_address(token)
-        except ValueError:
-            return token
-        if not isinstance(addr, ipaddress.IPv6Address):
-            return token
-        if counter is not None:
-            counter[0] += 1
-        return "<ip>"
-    return _IPV6_CANDIDATE.sub(repl, value)
+        run = match.group(0)
+        start = match.start()
+        # An address glued to letters or digits ("std::string") is not
+        # one; letters around a run are checked on the original string.
+        before = value[start - 1] if start else ""
+        after = value[match.end()] if match.end() < len(value) else ""
+        out, pos = [], 0
+        while pos < len(run):
+            span = _ipv6_span(run[pos:])
+            if not span:
+                break
+            a, b = pos + span[0], pos + span[1]
+            left = run[a - 1] if a else before
+            right = run[b] if b < len(run) else after
+            if left.isalnum() or right.isalnum():
+                break
+            out.append(run[pos:a] + "<ip>")
+            pos = b
+            if counter is not None:
+                counter[0] += 1
+        return "".join(out) + run[pos:]
+    return _IPV6_RUN.sub(repl, value)
+# Generic folders, not people (documented in SECURITY.md).
 _NOT_NAMES = {"<user>", "shared", "public", "default", "users", "home"}
 
 
@@ -118,6 +162,11 @@ def _candidate_names(doc) -> List[str]:
         # whole words; one letter is too generic to be a name.
         if len(name) >= 2 and name.lower() not in _NOT_NAMES and name not in names:
             names.append(name)
+        # "bob-" or ".bob" is also plain "bob".
+        core = re.sub(r"^[\W_]+|[\W_]+$", "", name)
+        if core != name and len(core) >= 2 and core.lower() not in _NOT_NAMES \
+                and core not in names:
+            names.append(core)
         # A captured "Alice Smith" also makes bare "Smith" identifying.
         for part in name.split():
             if len(part) >= 3 and part.lower() not in _NOT_NAMES and part not in names:
@@ -143,10 +192,21 @@ def _candidate_names(doc) -> List[str]:
                 for match in rx.finditer(node):
                     add(match.group(1))
 
+    def hosts(node):
+        # system.hostname wherever a system object sits, nested too.
+        if isinstance(node, dict):
+            value = node.get("hostname")
+            if isinstance(value, str):
+                add(value)
+                add(value.split(".")[0])
+            for child in node.values():
+                hosts(child)
+        elif isinstance(node, list):
+            for child in node:
+                hosts(child)
+
     walk(doc)
-    hostname = str((doc.get("system") or {}).get("hostname") or "")
-    add(hostname)
-    add(hostname.split(".")[0])
+    hosts(doc)
     return names
 
 
@@ -169,8 +229,10 @@ def _scrub_text(value, names=(), counter=None):
     value = _scrub_paths(value, counter)
     for name in names:
         # Case variants of a known name are the same name ("ALICE").
-        value, n = re.subn(r"\b" + re.escape(name) + r"\b", "<name>", value,
-                           flags=re.IGNORECASE)
+        # Only a letter or digit joins a name to its neighbours, so
+        # "_Bob_" and "bob-" are found as well as "Bob".
+        value, n = re.subn(r"(?<![^\W_])" + re.escape(name) + r"(?![^\W_])",
+                           "<name>", value, flags=re.IGNORECASE)
         if counter is not None:
             counter[0] += n
     return value
@@ -196,11 +258,9 @@ _RESIDUAL_RE = [
     re.compile(r"/root/(?!<user>)", re.IGNORECASE),
     re.compile(r"/Volumes/(?!<volume>)", re.IGNORECASE),
     re.compile(r"[A-Za-z]:[\\/]Users[\\/](?!<user>)", re.IGNORECASE),
-    re.compile(r"[A-Za-z]:[\\/]Documents and Settings[\\/]", re.IGNORECASE),
-    re.compile(r"\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b"),
-    re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
-    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
-    re.compile(r"\b[\w.-]+\.ts\.net\b", re.IGNORECASE),
+    re.compile(r"[A-Za-z]:[\\/]+Documents and Settings[\\/]", re.IGNORECASE),
+    re.compile(r"(?<![\w~])~(?!<user>)[^\s/\\\"~<]*[^\W\d_]"),
+    _MAC, _EMAIL, _IPV4, _TSNET,
 ]
 
 
@@ -237,14 +297,20 @@ def _schema_words():
             for value in node:
                 take(value)
         elif isinstance(node, str):
-            words.update(w.lower() for w in re.split(r"\W+", node) if w)
+            for sep in (r"\W+", r"[^A-Za-z0-9]+"):
+                words.update(w.lower() for w in re.split(sep, node) if w)
 
     from . import benches  # noqa: F401  (registers every benchmark)
+    from .benches.process import ENV_POLICY
     from .registry import REGISTRY
+    from .util import NODE_ENV_REMOVED, SHELL_ENV_REMOVED
     for b in REGISTRY:
         take(b.id)
         take(b.describe())
-    take(list(_CATEGORIES))
+    take([list(_CATEGORIES), ENV_POLICY, list(SHELL_ENV_REMOVED),
+          list(NODE_ENV_REMOVED), "sanitized removed NODE_OPTIONS",
+          list(_SYSTEM_FIELDS), list(_ENTRY_FIELDS), list(_META_FIELDS),
+          list(_TOOL_FIELDS), list(_TOP_FIELDS)])
     try:
         index = json.loads(pkgutil.get_data(
             "agentperf", "references/index.json").decode("utf-8"))
@@ -258,8 +324,16 @@ def _schema_words():
 
 
 def _is_schema_word(name):
-    parts = [w.lower() for w in re.split(r"\W+", name) if w]
+    parts = [w.lower() for w in re.split(r"[^A-Za-z0-9]+", name) if w]
     return bool(parts) and all(w in _schema_words() for w in parts)
+
+
+def _hidden_name(text, names):
+    """A known name inside a word that is not agentperf vocabulary
+    ("BobLaptop"): the whole-word scrub cannot reach it."""
+    words = _schema_words()
+    tokens = [t for t in re.split(r"\W+", text.lower()) if t and t not in words]
+    return any(len(n) >= 3 and n.lower() in t for t in tokens for n in names)
 
 
 def _residual_text(text, names):
@@ -268,49 +342,79 @@ def _residual_text(text, names):
         len(name) >= 3 and name.lower() in lowered for name in names)
 
 
-# --- Schema awareness -------------------------------------------------
-# Anonymization must never rewrite the result schema itself. A hostname
-# of "work" or a username of "git" must leave benchmark ids, schema
-# keys, categories, units, method strings, and scoring config byte-
-# identical, or sharing would move scores (round-8 F1). The walk in
-# anonymize() therefore classifies every string by where it sits:
+# --- What share keeps ------------------------------------------------
+# share keeps only the fields agentperf writes. Anything else (a note
+# typed into the file, a field from another tool) is dropped whole, not
+# scrubbed: a filter can only promise to clean text whose shape it
+# knows. Each kept field is cleaned by where it sits:
 #
-# - "keep" and "path": schema text and known generic facts (benchmark
-#   definitions and methods, the known corpus, scoring, and measurement
-#   fields, versions, CPU models, OS names, tool versions). Paths and
-#   addresses are scrubbed, and so is any user or host name that is not
-#   a word of agentperf's own vocabulary (_schema_words). Real schema
-#   text holds neither, so it comes through byte-identical.
-# - "full": free text that can hold identifying content (labels, skip
-#   reasons, unknown fields, notes): paths, addresses, and every known
-#   user/host name are scrubbed, and anything still identifying is
-#   withheld whole.
+# - "schema": schema text and known generic facts (benchmark titles
+#   and methods, versions, CPU models, OS names, tool versions). Paths
+#   and addresses are scrubbed, and so is any user or host name that is
+#   not a word of agentperf's own vocabulary (_schema_words); a word
+#   still hiding such a name ("BobLaptop") withholds the string. Real
+#   schema text holds none of these, so it comes through byte-identical
+#   and a host named "process" or "git" cannot move a score.
+# - "full": free text (labels, skip reasons, probe errors, profile
+#   descriptions): paths, addresses, and every known user or host name
+#   are scrubbed, and anything still identifying is withheld whole.
+# - "hex" (hashes), "day" (timestamps, cut to the day), and numbers
+#   must have their shape or are withheld.
 #
-# Dict keys are scrubbed like schema text, so "benchmarks" survives a
-# hostname of "bench" while a path or a real name used as a key is
-# still generalized.
-_BENCH_KEEP_KEYS = ("category", "title", "unit", "models")
-_META_KEEP_KEYS = ("method", "impl", "shell_kind", "env_policy", "shell",
-                   "python", "mode")
-# Generic system facts whose values explain the measurements and must
-# survive verbatim (modulo any path they might embed).
-_SYSTEM_PATH_KEYS = (
-    "os_family", "os", "os_release", "os_version", "machine",
-    "python", "python_impl", "cpu_model", "model_id", "fs_type",
-    "fs_options", "power_source", "power_plan", "governor", "spotlight",
-    "filevault", "virtualization", "wsl",
-)
-_TOP_KEEP_KEYS = ("schema", "kind", "suite_version", "package_version",
-                  "profile", "fingerprint")
-# Top-level objects the tool writes whole. Their known children are
-# kept verbatim (the shell policy text is classified, the weights and
-# corpus facts feed scoring); unknown children are scrubbed like any
-# other free text.
-_STRUCT_KEEP_KEYS = {
-    "corpus": ("files", "bytes", "fixture_hash"),
-    "measurement_env": ("shell_launch", "node_spawn_diagnostic"),
-    "scoring_config": ("category_weights",),
+# Keys are cleaned like schema text.
+_SYSTEM_FIELDS = {
+    # Generic facts that explain the measurements.
+    "os_family": "schema", "os": "schema", "os_release": "schema",
+    "os_version": "schema", "machine": "schema", "python": "schema",
+    "python_impl": "schema", "cpu_model": "schema", "fs_type": "schema",
+    "fs_options": "schema", "power_source": "schema", "power_plan": "schema",
+    "governor": "schema", "spotlight": "schema", "filevault": "schema",
+    "virtualization": "schema", "wsl": "schema",
+    # Already de-branded before the walk.
+    "security_agents": "schema", "antivirus": "schema",
+    "probe_errors": "full",
 }
+for _key in ("logical_cpus", "physical_cpus", "perf_cores", "efficiency_cores",
+             "ram_gb", "disk_total_gb", "disk_free_gb", "load_avg_start",
+             "load_avg_end", "low_power_mode", "thermal_warning",
+             "time_machine_running", "workdir_in_icloud", "rotational",
+             "raid_resync", "workdir_on_windows_drive", "cwd_on_windows_drive",
+             "defender_realtime", "windows_search_running", "dev_drive",
+             "top_process_max_cpu", "processes_over_80pct"):
+    _SYSTEM_FIELDS[_key] = "schema"
+_ENTRY_FIELDS = {"category": "schema", "title": "schema", "unit": "schema",
+                 "models": "schema", "meta": "meta"}
+for _key in ("lower_is_better", "weight", "scored", "ops", "median", "min",
+             "max", "p10", "p90", "n", "cv", "mean", "noisy", "samples",
+             "run_samples", "run_medians", "runs"):
+    _ENTRY_FIELDS[_key] = "schema"
+_META_FIELDS = ("method", "impl", "shell_kind", "env_policy", "shell",
+                "python", "mode", "matched_files", "matched_lines",
+                "tls_verified", "workers")
+_TOOL_FIELDS = ("bash", "claude", "codex", "exec", "git", "grep", "node",
+                "powershell", "pwsh", "rg", "shell", "tar")
+_TOP_FIELDS = {
+    "schema": "schema", "kind": "schema", "suite_version": "schema",
+    "package_version": "schema", "profile": "schema", "fingerprint": "hex",
+    "started_at": "day", "duration_s": "schema", "label": "full",
+    "corpus": "corpus", "system": "system", "tools": "tools",
+    "tool_versions": "tools", "benchmarks": "benchmarks",
+    "skipped": "skipped", "measurement_env": "measurement_env",
+    "scoring_config": "scoring_config", "combined_runs": "runs",
+    "merged_runs": "runs", "reference_profile": "refprofile",
+    "anonymized": "schema",
+}
+_OBJECT_FIELDS = {
+    "corpus": {"files": "schema", "bytes": "schema", "fixture_hash": "hex"},
+    "measurement_env": {"shell_launch": "schema",
+                        "node_spawn_diagnostic": "schema"},
+    "scoring_config": {"category_weights": "schema"},
+    "refprofile": {"name": "schema", "measured": "schema",
+                   "description": "full", "anonymized": "schema"},
+    "runs": {"started_at": "day", "benchmarks": "schema"},
+}
+_BENCH_ID = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\Z")
+_HEX = re.compile(r"[0-9a-fA-F]{4,128}\Z")
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 _CATEGORIES = ("process", "files", "search", "git", "compute",
                "transfer", "ipc", "network", "diag")
@@ -377,134 +481,109 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
                                 else "Indexing disabled" if "Indexing disabled" in spot
                                 else "unknown")
         changes.append("spotlight volume path generalized")
-    # Scrub the strings that can hold identifying content, schema-
-    # aware: a user or host name that is also agentperf vocabulary is
-    # left alone in schema positions, so it cannot move a score. Run ids
-    # are removed and timestamps are cut to the day at every depth,
-    # including the top level and combined_runs/merged_runs.
+    # Walk the document by schema position (see "What share keeps").
+    # Run ids are removed and timestamps cut to the day at every depth.
     counter = [0]
     withheld = [0]
     nested_ids = [0]
-    # Whole strings treated as schema wherever they appear (benchmark
-    # ids, also listed under merged_runs; category names; units), so a
-    # host named "files" leaves them alone. They still go through the
-    # schema scrub, so a hand-added id cannot shelter a real name.
-    protected_strings = set(_CATEGORIES)
-    benches0 = out.get("benchmarks")
-    if isinstance(benches0, dict):
-        protected_strings.update(
-            k for k in benches0 if isinstance(k, str))
-        for entry0 in benches0.values():
-            if isinstance(entry0, dict):
-                for field in ("category", "unit"):
-                    if isinstance(entry0.get(field), str):
-                        protected_strings.add(entry0[field])
-
+    dropped = [0]
     # Names that are not agentperf vocabulary are identity wherever
     # they appear, schema positions included.
     strict_names = [n for n in names if not _is_schema_word(n)]
 
+    def withhold():
+        withheld[0] += 1
+        return "<withheld>"
+
     def clean_schema(value):
-        # Schema text (kept fields, path fields, keys, benchmark ids)
-        # gets the full path and address scrub and loses every name
-        # that is not a vocabulary word. Real schema text never holds
-        # either, so it comes through byte-identical; anything typed
-        # in by hand is scrubbed or withheld like free text.
         cleaned = _scrub_text(value, strict_names, counter)
-        if _residual_path(cleaned):
-            withheld[0] += 1
-            return "<withheld>"
+        if _residual_path(cleaned) or _hidden_name(cleaned, strict_names):
+            return withhold()
         return cleaned
 
-    def clean_string(value, mode):
-        if mode in ("keep", "path") or value in protected_strings:
-            return clean_schema(value)
+    def clean_full(value):
         cleaned = _scrub_text(value, names, counter)
         # Fail closed: a free-text string still identifying after the
         # scrub is withheld whole instead of passing through.
         if _residual_text(cleaned, names):
-            withheld[0] += 1
-            return "<withheld>"
+            return withhold()
         return cleaned
 
-    def clean_key(key):
-        if not isinstance(key, str):
-            return key
-        return clean_schema(key)
+    def leaf(value, mode):
+        if not isinstance(value, str):
+            if mode in ("hex", "day") and value is not None:
+                return withhold()
+            return value
+        if mode == "hex":
+            return value if _HEX.match(value) else withhold()
+        if mode == "day":
+            day = value[:10]
+            return day if _DAY.match(day) else withhold()
+        if mode == "full":
+            return clean_full(value)
+        return clean_schema(value)
 
-    def child_ctx(ctx, key):
+    def child_mode(ctx, key):
+        """How to clean *key* under *ctx*; None drops it."""
         if ctx == "root":
-            if key == "benchmarks":
-                return "benchmarks"
-            if key == "system":
-                return "system"
-            if key in _TOP_KEEP_KEYS:
-                return "keep"
-            if key in _STRUCT_KEEP_KEYS:
-                return key
-            if key in ("tools", "tool_versions"):
-                return "path"
-            if key == "reference_profile":
-                return "refprofile"
-            return "full"
+            return _TOP_FIELDS.get(key)
+        if ctx == "system":
+            return _SYSTEM_FIELDS.get(key)
         if ctx == "benchmarks":
             return "entry"
         if ctx == "entry":
-            if key in _BENCH_KEEP_KEYS:
-                return "keep"
-            if key == "meta":
-                return "meta"
-            return "full"
+            return _ENTRY_FIELDS.get(key)
         if ctx == "meta":
-            return "keep" if key in _META_KEEP_KEYS else "full"
-        if ctx == "system":
-            if key in _SYSTEM_PATH_KEYS:
-                return "path"
-            # Already de-branded above; keep the fixed replacements.
-            if key in ("security_agents", "antivirus"):
-                return "keep"
+            return "schema" if key in _META_FIELDS else None
+        if ctx == "tools":
+            return "schema" if key in _TOOL_FIELDS else None
+        if ctx == "skipped":
             return "full"
-        if ctx == "refprofile":
-            return "keep" if key in ("name", "measured") else "full"
-        if ctx in _STRUCT_KEEP_KEYS:
-            # Only the children the tool writes are structural; anything
-            # else in these objects is unknown text and gets scrubbed.
-            return "keep" if key in _STRUCT_KEEP_KEYS[ctx] else "full"
-        return ctx  # keep / path / full propagate into nested values
+        if ctx in _OBJECT_FIELDS:
+            return _OBJECT_FIELDS[ctx].get(key)
+        return ctx  # schema / full: nested values keep their mode
 
-    def scrub(node, ctx):
+    def walk(node, ctx):
         if isinstance(node, dict):
+            if ctx in ("hex", "day"):
+                return withhold()
             out_dict = {}
             for k, v in node.items():
                 if k == "run_id":
                     nested_ids[0] += 1
                     continue
-                # Keys carry text too (a path or a name can be a key):
-                # scrubbed as schema text, so vocabulary keys survive.
-                key = clean_key(k)
+                mode = child_mode(ctx, k) if isinstance(k, str) else None
+                if mode is None:
+                    dropped[0] += 1
+                    continue
+                key = clean_schema(k)
+                if ctx == "benchmarks" and (key != k or not _BENCH_ID.match(k)):
+                    # Not a benchmark agentperf defines (or one that
+                    # names a person): drop it rather than rename it.
+                    dropped[0] += 1
+                    continue
                 if key in out_dict:
                     # Two keys scrubbed to one placeholder stay distinct.
                     n = 2
                     while "{} ({})".format(key, n) in out_dict:
                         n += 1
                     key = "{} ({})".format(key, n)
-                if k == "started_at" and isinstance(v, str):
-                    # A timestamp is cut to the day; anything else under
-                    # this name is free text and is scrubbed as such.
-                    day = v[:10]
-                    out_dict[key] = day if _DAY.match(day) \
-                        else clean_string(v, "full")
-                    continue
-                out_dict[key] = scrub(v, child_ctx(ctx, k))
+                out_dict[key] = walk(v, mode)
             return out_dict
         if isinstance(node, list):
-            return [scrub(v, ctx) for v in node]
-        if isinstance(node, str):
-            mode = ctx if ctx in ("keep", "path") else "full"
-            return clean_string(node, mode)
-        return node
+            if ctx == "runs":
+                return [walk(v, ctx) if isinstance(v, dict) else withhold()
+                        for v in node]
+            return [walk(v, ctx) for v in node]
+        if ctx in ("root", "system", "benchmarks", "entry", "meta", "tools",
+                   "skipped") or ctx in _OBJECT_FIELDS:
+            return withhold() if isinstance(node, str) else node
+        return leaf(node, ctx)
 
-    out = scrub(out, "root")
+    out = walk(out, "root")
+    if dropped[0]:
+        changes.append("dropped {} field(s) agentperf does not write".format(
+            dropped[0]))
     if withheld[0]:
         changes.append("withheld {} string(s) that could not be scrubbed "
                        "clean".format(withheld[0]))

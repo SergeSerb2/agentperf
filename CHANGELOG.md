@@ -152,18 +152,20 @@ established (see the shell note).
     `report`. `combine` and `merge` refuse inputs whose shell benchmarks
     would change policy in the output (the output keeps the first file's
     `measurement_env`, so a benchmark from another file with a different
-    or unrecorded policy would otherwise be relabelled). `share` keeps
-    only the known fields of `corpus`, `measurement_env`, and
-    `scoring_config` verbatim; anything else in them is scrubbed like
-    other free text. A `started_at` that is not a timestamp is scrubbed
-    rather than cut to ten characters, at any depth. Schema positions
-    (benchmark ids, kept fields, keys, tool file names) now get the full
-    path and address scrub and lose any user or host name that is not a
-    word of agentperf's own vocabulary; the vocabulary comes from the
-    package (registry and bundled profiles), never from the shared file,
-    so a hand-added id cannot shelter a name. `~user` paths with any user
-    name, legacy `Documents and Settings` homes, and two-letter names are
-    recognized. Scores do not move: every bundled profile scores exactly
+    or unrecorded policy would otherwise be relabelled). `share` now
+    keeps only the fields agentperf writes and drops the rest (a note typed
+    into the file, a field from another tool), at every level. In what it
+    keeps, schema text (benchmark ids, kept fields, keys, tool file names)
+    gets the full path and address scrub and loses any user or host name
+    that is not a word of agentperf's own vocabulary; that vocabulary
+    comes from the package (registry and bundled profiles), never from the
+    shared file. Timestamps must look like timestamps and hashes like
+    hashes, or they are withheld. Home-path and address detection is
+    wider: any `~user` form, legacy `Documents and Settings` homes,
+    quoted, mixed-separator, and doubled-separator home paths, two-letter
+    names, nested host names, IPv6 behind a label (`ip:fe80::1`),
+    addresses wrapped in underscores, dotted MAC addresses, and quoted
+    email local parts. Scores do not move: every bundled profile scores exactly
     as before, and its `share` output is byte-identical.
   - Smaller correctness fixes: a failed launch inside the 32-way
     parallel spawn reaps the shells that did start; a cached tool must

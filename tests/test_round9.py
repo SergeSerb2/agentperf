@@ -165,9 +165,69 @@ class ShareUnknownFieldsTest(unittest.TestCase):
         # Keys that scrub to one placeholder keep both values.
         doc = copy.deepcopy(base)
         doc["system"] = dict(who)
-        doc["note"] = {"Bob": "owner", "BUILDHOST7": "machine"}
-        note = anonymize(doc)[0]["note"]
-        self.assertEqual(sorted(note.values()), ["machine", "owner"])
+        doc["skipped"] = {"Bob": "owner", "BUILDHOST7": "machine"}
+        skipped = anonymize(doc)[0]["skipped"]
+        self.assertEqual(sorted(skipped.values()), ["machine", "owner"])
+        self.assertNotIn("Bob", json.dumps(skipped))
+
+    def test_fields_agentperf_does_not_write_are_dropped(self):
+        # Round-9 third verification (f137e3c): hand-added fields are
+        # dropped whole, at every level, instead of scrubbed.
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["owner"] = "files"
+        doc["system"]["hostname"] = "files"
+        doc["system"]["owner_note"] = {"who": "Bob"}
+        doc["corpus"]["note"] = "Bob"
+        doc["benchmarks"]["process.shell"]["note"] = "Bob"
+        doc["benchmarks"]["process.shell"]["meta"]["owner"] = "Bob"
+        doc["combined_runs"] = [{"started_at": "2026-10-01T10:00:00",
+                                 "system": {"hostname": "BUILDHOST7"}}]
+        doc["reference_profile"]["owner"] = "Bob"
+        doc["tools"]["notes"] = "Bob"
+        clean, changes = anonymize(doc)
+        text = json.dumps(clean)
+        for word in ("owner", "Bob", "BUILDHOST7", "owner_note", '"note"',
+                     '"notes"'):
+            self.assertNotIn(word, text)
+        self.assertEqual(clean["combined_runs"], [{"started_at": "2026-10-01"}])
+        self.assertTrue(any("does not write" in c for c in changes), changes)
+
+    def test_address_and_home_forms_from_the_third_review(self):
+        from agentperf.privacy import anonymize
+        base = _load("macos-m1-pro")
+        cases = [
+            ({"workdir": '"/home/Bob"'}, "Bob"),
+            ({"workdir": "/home/Bob\nnext line"}, "Bob"),
+            ({"workdir": "C:\\Users/Bob/private"}, "Bob"),
+            ({"workdir": "/home//Bob/private"}, "Bob"),
+            ({"workdir": "/home/bob-/private"}, "bob-"),
+        ]
+        for system, name in cases:
+            doc = copy.deepcopy(base)
+            doc["system"].update(system)
+            doc["system"]["os_version"] = name + " " + name + "Laptop"
+            doc["skipped"] = {"process.node": "owner " + name}
+            text = json.dumps(anonymize(doc)[0])
+            self.assertNotIn(name, text, system)
+        for value in ("~123bob", "~.bob", "ip:2001:db8:1111:2222:3333:4444:5555:6666",
+                      "ip:fe80::1", "_10.20.30.40_", "_AA:BB:CC:DD:EE:FF_",
+                      "_box99.private-tail.ts.net_", "aabb.ccdd.eeff",
+                      '"bob"@example.com', "2001:db8::42"):
+            doc = copy.deepcopy(base)
+            doc["skipped"] = {"process.node": "seen " + value}
+            doc["system"]["os_version"] = value
+            clean = anonymize(doc)[0]
+            for where in (clean["skipped"]["process.node"],
+                          clean["system"]["os_version"]):
+                for frag in ("bob", "2001:db8", "fe80", "10.20.30", "AA:BB",
+                             "box99", "aabb.ccdd"):
+                    self.assertNotIn(frag, where, (value, where))
+        # Ordinary text with colons and tildes is left alone.
+        doc = copy.deepcopy(base)
+        doc["skipped"] = {"process.node": "std::string at 12:30:45, ~4 KB, ::1"}
+        self.assertEqual(anonymize(doc)[0]["skipped"]["process.node"],
+                         "std::string at 12:30:45, ~4 KB, ::1")
 
     def test_schema_word_names_never_move_scores(self):
         from agentperf import scoring
@@ -304,3 +364,60 @@ class ReportFieldsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShareAllowlistTest(unittest.TestCase):
+    """share keeps only fields agentperf writes. These tests keep that
+    list in step with the code that writes them."""
+
+    def test_every_system_probe_key_is_kept_or_dropped_on_purpose(self):
+        # Runs the real probe on this machine; CI covers Linux, macOS,
+        # and Windows, so every platform's keys are checked.
+        from agentperf import env
+        from agentperf.privacy import _DROP_SYSTEM, _SYSTEM_FIELDS
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        system = env.collect(tmp)
+        unknown = set(system) - set(_SYSTEM_FIELDS) - set(_DROP_SYSTEM) \
+            - {"hostname", "workdir", "top_processes"}
+        self.assertEqual(unknown, set())
+
+    def test_meta_and_tool_keys_written_by_the_code_are_kept(self):
+        import re
+        from agentperf.privacy import _META_FIELDS, _TOOL_FIELDS
+        pkg = os.path.join(ROOT, "agentperf")
+        notes, tools = set(), set()
+        for folder, _dirs, files in os.walk(pkg):
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                    text = fh.read()
+                for call in re.findall(r"ctx\.note\(([^)]*)\)", text):
+                    notes.update(re.findall(r"(\w+)=", call))
+                tools.update(re.findall(r'found\["(\w+)"\]', text))
+        self.assertTrue(notes and tools)
+        self.assertEqual(notes - set(_META_FIELDS), set())
+        self.assertEqual(tools - set(_TOOL_FIELDS), set())
+
+    def test_a_real_result_keeps_every_field_through_share(self):
+        from agentperf import scoring
+        from agentperf.privacy import anonymize
+        from agentperf.runner import run_suite
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            doc = run_suite(os.path.join(tmp, "work"), profile="quick",
+                            label="probe",
+                            only=["process.python", "process.shell"])
+        doc = scoring.validate_result(json.loads(json.dumps(doc)))
+        clean, changes = anonymize(doc)
+        self.assertFalse(any("does not write" in c for c in changes), changes)
+        for key in doc:
+            if key not in ("run_id",):
+                self.assertIn(key, clean)
+        for bid, entry in doc["benchmarks"].items():
+            self.assertEqual(sorted(clean["benchmarks"][bid]), sorted(entry))
+        self.assertEqual(clean["fingerprint"], doc["fingerprint"])
+        self.assertEqual(clean["measurement_env"], doc["measurement_env"])

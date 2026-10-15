@@ -154,6 +154,6 @@ Hostname, label, run id (including the run ids nested inside combined
 results, whose timestamps are cut to the day), workdir and other home paths
 with everything under them, volume names, process names (kept as counts),
 security product names (kept as detected/active flags), tool paths (file
-names only), and IP/MAC addresses or user/host names wherever they appear,
-keys and unknown fields included. It prints every change it makes. Read the file once before posting:
+names only), and IP/MAC addresses or user/host names wherever they appear.
+Fields agentperf does not write are dropped. It prints every change it makes. Read the file once before posting:
 [SECURITY.md](../SECURITY.md) lists the details and the limits.
