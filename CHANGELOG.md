@@ -156,10 +156,15 @@ established (see the shell note).
     only the known fields of `corpus`, `measurement_env`, and
     `scoring_config` verbatim; anything else in them is scrubbed like
     other free text. A `started_at` that is not a timestamp is scrubbed
-    rather than cut to ten characters, and a schema-position string
-    (a benchmark id, a kept field) that holds a home path is scrubbed
-    too. Scores do not move: every bundled profile scores exactly as
-    before, and its `share` output is byte-identical.
+    rather than cut to ten characters, at any depth. Schema positions
+    (benchmark ids, kept fields, keys, tool file names) now get the full
+    path and address scrub and lose any user or host name that is not a
+    word of agentperf's own vocabulary; the vocabulary comes from the
+    package (registry and bundled profiles), never from the shared file,
+    so a hand-added id cannot shelter a name. `~user` paths with any user
+    name, legacy `Documents and Settings` homes, and two-letter names are
+    recognized. Scores do not move: every bundled profile scores exactly
+    as before, and its `share` output is byte-identical.
   - Smaller correctness fixes: a failed launch inside the 32-way
     parallel spawn reaps the shells that did start; a cached tool must
     exit 0 to count as working; every network test records its own TLS

@@ -35,9 +35,14 @@ _HOME_CAPTURE = [
     # A Windows user folder can itself contain spaces ("Alice Smith").
     re.compile(r"[A-Za-z]:\\Users\\([^\\\"\n]+?)(?:\\|$)", re.IGNORECASE),
     re.compile(r"[A-Za-z]:/Users/([^/\"\n]+)", re.IGNORECASE),
+    re.compile(r"[A-Za-z]:[\\/]Documents and Settings[\\/]([^\\/\"\n]+?)"
+               r"(?:[\\/]|$)", re.IGNORECASE),
     re.compile(r"\\\\([^\\\s\"'/]+)"),          # UNC server name
     re.compile(r"(?<![\w:])//([^\s\"'/]+)/"),    # //server/share
-    re.compile(r"~([A-Za-z][\w.-]*)[/\\]"),      # ~user/...
+    # ~user/... with any user name ("~_bob", "~123bob", accented
+    # letters), and a bare ~user that starts with a letter.
+    re.compile(r"~([^\s/\\\"~<][^\s/\\\"~]*)[/\\]"),
+    re.compile(r"(?<![\w~])~([^\W\d][\w.-]*)"),
 ]
 # Home paths: the subpath under a home directory is private too (client
 # names, project names), so the whole path token is generalized. Volume
@@ -59,9 +64,11 @@ _HOME_RE = [
     (re.compile(r"\\\\[^\n\"]+"), r"\\<host>\<share>"),
     (re.compile(r"(?<![\w:])//[^\s\"'/]+/[^\n\"]*"), "//<host>/<share>"),
     # Tilde paths are home paths: "~alice/Secret", "~/Client Plans".
-    (re.compile(r"~[A-Za-z][\w.-]*[/\\][^\n\"]*"), "~<user>"),
+    # Any user name, and a hand-typed "~<user>..." look-alike too.
+    (re.compile(r"~[^\s/\\\"~][^\s/\\\"~]*[/\\][^\n\"]*"), "~<user>"),
     (re.compile(r"~[/\\][^\n\"]*"), "~<user>"),
-    (re.compile(r"(?<![\w])~[A-Za-z][\w.-]*"), "~<user>"),
+    (re.compile(r"~<user>[^\s/\\\"]+"), "~<user>"),
+    (re.compile(r"(?<![\w~])~[^\W\d][\w.-]*"), "~<user>"),
     # The user folder itself may contain spaces, so the whole token to
     # the next quote or line end is generalized, as with Windows below.
     (re.compile(r"/Users/[^\n\"]+", re.IGNORECASE), "/Users/<user>"),
@@ -107,7 +114,9 @@ def _candidate_names(doc) -> List[str]:
 
     def add(name):
         name = (name or "").strip()
-        if len(name) >= 3 and name.lower() not in _NOT_NAMES and name not in names:
+        # Two-letter names ("Al", a host called "pc") are scrubbed as
+        # whole words; one letter is too generic to be a name.
+        if len(name) >= 2 and name.lower() not in _NOT_NAMES and name not in names:
             names.append(name)
         # A captured "Alice Smith" also makes bare "Smith" identifying.
         for part in name.split():
@@ -142,11 +151,7 @@ def _candidate_names(doc) -> List[str]:
 
 
 def _scrub_paths(value, counter=None):
-    """Paths and addresses only: no bare-name rewriting.
-
-    Used for dict keys and for structural string values, where a word
-    that happens to match a user or host name ("work" inside a
-    benchmark id, a hostname of "git") is schema, not identity."""
+    """Paths and addresses only: no bare-name rewriting."""
     if not isinstance(value, str):
         return value
     value = _scrub_ipv6(value, counter)
@@ -183,13 +188,16 @@ def _scrub_text(value, names=(), counter=None):
 _RESIDUAL_RE = [
     re.compile(r"\\\\(?!<host>)", re.IGNORECASE),
     re.compile(r"(?<![\w:])//(?!<host>)[^\s\"'/]+/", re.IGNORECASE),
-    re.compile(r"~[A-Za-z][\w.-]*[/\\]"),
+    re.compile(r"~(?!<user>)[^\s/\\\"~][^\s/\\\"~]*[/\\]"),
     re.compile(r"~[/\\]"),
+    re.compile(r"(?<![\w~])~(?!<user>)[^\W\d]"),
     re.compile(r"/Users/(?!<user>)", re.IGNORECASE),
     re.compile(r"/home/(?!<user>)", re.IGNORECASE),
     re.compile(r"/root/(?!<user>)", re.IGNORECASE),
     re.compile(r"/Volumes/(?!<volume>)", re.IGNORECASE),
     re.compile(r"[A-Za-z]:[\\/]Users[\\/](?!<user>)", re.IGNORECASE),
+    re.compile(r"[A-Za-z]:[\\/]Documents and Settings[\\/]", re.IGNORECASE),
+    re.compile(r"\b(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}\b"),
     re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
     re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
     re.compile(r"\b[\w.-]+\.ts\.net\b", re.IGNORECASE),
@@ -199,6 +207,59 @@ _RESIDUAL_RE = [
 def _residual_path(text):
     return any(rx.search(text) for rx in _RESIDUAL_RE) or \
         _scrub_ipv6(text) != text
+
+
+_SCHEMA_WORDS = None
+
+
+def _schema_words():
+    """Lower-case words of agentperf's own vocabulary.
+
+    Built from the package itself (the benchmark registry and the
+    bundled reference profiles), never from the file being shared, so a
+    hand-added benchmark id cannot vouch for a name. A user or host name
+    made only of these words ("work", "git", "process") is schema, not
+    identity, in schema positions; any other name is scrubbed there too.
+    """
+    global _SCHEMA_WORDS
+    if _SCHEMA_WORDS is not None:
+        return _SCHEMA_WORDS
+    import json
+    import pkgutil
+    words = set()
+
+    def take(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                take(key)
+                take(value)
+        elif isinstance(node, list):
+            for value in node:
+                take(value)
+        elif isinstance(node, str):
+            words.update(w.lower() for w in re.split(r"\W+", node) if w)
+
+    from . import benches  # noqa: F401  (registers every benchmark)
+    from .registry import REGISTRY
+    for b in REGISTRY:
+        take(b.id)
+        take(b.describe())
+    take(list(_CATEGORIES))
+    try:
+        index = json.loads(pkgutil.get_data(
+            "agentperf", "references/index.json").decode("utf-8"))
+        for entry in index.get("profiles", []):
+            take(json.loads(pkgutil.get_data(
+                "agentperf", "references/" + entry["file"]).decode("utf-8")))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    _SCHEMA_WORDS = frozenset(words)
+    return _SCHEMA_WORDS
+
+
+def _is_schema_word(name):
+    parts = [w.lower() for w in re.split(r"\W+", name) if w]
+    return bool(parts) and all(w in _schema_words() for w in parts)
 
 
 def _residual_text(text, names):
@@ -214,19 +275,20 @@ def _residual_text(text, names):
 # identical, or sharing would move scores (round-8 F1). The walk in
 # anonymize() therefore classifies every string by where it sits:
 #
-# - "keep": structural values, returned untouched and never withheld
-#   (benchmark definitions and methods, corpus and scoring config, the
-#   measurement environment, versions).
-# - "path": known generic facts; paths and addresses are scrubbed,
-#   bare words are left alone (CPU models, OS names, tool versions).
+# - "keep" and "path": schema text and known generic facts (benchmark
+#   definitions and methods, the known corpus, scoring, and measurement
+#   fields, versions, CPU models, OS names, tool versions). Paths and
+#   addresses are scrubbed, and so is any user or host name that is not
+#   a word of agentperf's own vocabulary (_schema_words). Real schema
+#   text holds neither, so it comes through byte-identical.
 # - "full": free text that can hold identifying content (labels, skip
-#   reasons, unknown fields, notes): paths, addresses, and known
-#   user/host names are scrubbed, and anything still identifying is
+#   reasons, unknown fields, notes): paths, addresses, and every known
+#   user/host name are scrubbed, and anything still identifying is
 #   withheld whole.
 #
-# Dict keys are scrubbed for path forms only, never for bare names, so
-# "benchmarks" survives a hostname of "bench" while a path used as a
-# key is still generalized.
+# Dict keys are scrubbed like schema text, so "benchmarks" survives a
+# hostname of "bench" while a path or a real name used as a key is
+# still generalized.
 _BENCH_KEEP_KEYS = ("category", "title", "unit", "models")
 _META_KEEP_KEYS = ("method", "impl", "shell_kind", "env_policy", "shell",
                    "python", "mode")
@@ -277,8 +339,6 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
     for key in ("run_id",):
         if out.pop(key, None) is not None:
             changes.append("removed {}".format(key))
-    if out.get("started_at"):
-        out["started_at"] = str(out["started_at"])[:10]  # keep the day, drop the clock
     system = out.get("system", {})
     # Keep the size of the background load, never the process names.
     top = system.get("top_processes") or []
@@ -318,16 +378,17 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
                                 else "unknown")
         changes.append("spotlight volume path generalized")
     # Scrub the strings that can hold identifying content, schema-
-    # aware: structural keys and values (benchmark ids, definitions,
-    # methods, scoring config) are never rewritten or withheld, so a
-    # user or host name that collides with schema vocabulary cannot
-    # move a score. Run ids are removed and timestamps are cut to the
-    # day at every depth, including inside combined_runs/merged_runs.
+    # aware: a user or host name that is also agentperf vocabulary is
+    # left alone in schema positions, so it cannot move a score. Run ids
+    # are removed and timestamps are cut to the day at every depth,
+    # including the top level and combined_runs/merged_runs.
     counter = [0]
     withheld = [0]
     nested_ids = [0]
-    # Whole strings that are schema wherever they appear: benchmark ids
-    # (also listed under merged_runs), category names, and units.
+    # Whole strings treated as schema wherever they appear (benchmark
+    # ids, also listed under merged_runs; category names; units), so a
+    # host named "files" leaves them alone. They still go through the
+    # schema scrub, so a hand-added id cannot shelter a real name.
     protected_strings = set(_CATEGORIES)
     benches0 = out.get("benchmarks")
     if isinstance(benches0, dict):
@@ -339,20 +400,25 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
                     if isinstance(entry0.get(field), str):
                         protected_strings.add(entry0[field])
 
+    # Names that are not agentperf vocabulary are identity wherever
+    # they appear, schema positions included.
+    strict_names = [n for n in names if not _is_schema_word(n)]
+
+    def clean_schema(value):
+        # Schema text (kept fields, path fields, keys, benchmark ids)
+        # gets the full path and address scrub and loses every name
+        # that is not a vocabulary word. Real schema text never holds
+        # either, so it comes through byte-identical; anything typed
+        # in by hand is scrubbed or withheld like free text.
+        cleaned = _scrub_text(value, strict_names, counter)
+        if _residual_path(cleaned):
+            withheld[0] += 1
+            return "<withheld>"
+        return cleaned
+
     def clean_string(value, mode):
-        if mode == "keep" or value in protected_strings:
-            # Schema text never holds a home path, address, or host
-            # name; one that does was added by hand and is scrubbed
-            # like any other path instead of passing through.
-            if not _residual_path(value):
-                return value
-            mode = "path"
-        if mode == "path":
-            cleaned = _scrub_paths(value, counter)
-            if _residual_path(cleaned):
-                withheld[0] += 1
-                return "<withheld>"
-            return cleaned
+        if mode in ("keep", "path") or value in protected_strings:
+            return clean_schema(value)
         cleaned = _scrub_text(value, names, counter)
         # Fail closed: a free-text string still identifying after the
         # scrub is withheld whole instead of passing through.
@@ -362,14 +428,9 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         return cleaned
 
     def clean_key(key):
-        if not isinstance(key, str) or (key in protected_strings
-                                        and not _residual_path(key)):
+        if not isinstance(key, str):
             return key
-        cleaned = _scrub_paths(key, counter)
-        if _residual_path(cleaned):
-            withheld[0] += 1
-            return "<withheld>"
-        return cleaned
+        return clean_schema(key)
 
     def child_ctx(ctx, key):
         if ctx == "root":
@@ -418,9 +479,15 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
                 if k == "run_id":
                     nested_ids[0] += 1
                     continue
-                # Keys carry text too (a path can be a key): scrub path
-                # forms only, never bare names.
+                # Keys carry text too (a path or a name can be a key):
+                # scrubbed as schema text, so vocabulary keys survive.
                 key = clean_key(k)
+                if key in out_dict:
+                    # Two keys scrubbed to one placeholder stay distinct.
+                    n = 2
+                    while "{} ({})".format(key, n) in out_dict:
+                        n += 1
+                    key = "{} ({})".format(key, n)
                 if k == "started_at" and isinstance(v, str):
                     # A timestamp is cut to the day; anything else under
                     # this name is free text and is scrubbed as such.

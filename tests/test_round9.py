@@ -106,6 +106,89 @@ class ShareUnknownFieldsTest(unittest.TestCase):
         clean, _c = anonymize(copy.deepcopy(doc))
         self.assertEqual(clean["started_at"], doc["started_at"][:10])
 
+    def test_every_position_and_form_is_scrubbed(self):
+        # Round-9 second verification (283b673): F1-F6 reproducers.
+        from agentperf import scoring
+        from agentperf.privacy import anonymize
+        base = {"label": "box", "profile": "standard", "system": {},
+                "skipped": {},
+                "benchmarks": {"process.shell": {
+                    "category": "process", "title": "Shell start",
+                    "unit": "ms", "lower_is_better": True, "weight": 1.0,
+                    "scored": True, "median": 1.0, "samples": [1.0],
+                    "meta": {}}}}
+        who = {"hostname": "BUILDHOST7",
+               "workdir": "/home/Bob/Private Repo"}
+        cases = [
+            ({"started_at": "2001:0db8:1111:2222:3333:4444:5555:6666"},
+             ["2001:0db8", "1111"]),
+            ({"started_at": "box99.private-tail.ts.net"}, ["box99"]),
+            ({"profile": "C:\\Documents and Settings\\Bob\\Private Repo"},
+             ["Bob", "Private"]),
+            ({"profile": "~Bob"}, ["Bob"]),
+            ({"profile": "/home/<user>Bob/Private Repo"}, ["Bob", "Private"]),
+            ({"profile": "AA:BB:CC:DD:EE:FF"}, ["AA:BB"]),
+            ({"corpus": {"note": {"n": [{"started_at": "~_bob/Private Repo"}]}}},
+             ["bob", "Private"]),
+            ({"note": "~123bob/Private Repo"}, ["123bob", "Private"]),
+            ({"note": "~\u00c9lodie/Private Repo"}, ["lodie", "Private"]),
+            ({"system": dict(who, cpu_model="Bob CPU"), "profile": "Bob",
+              "tool_versions": {"python": "BUILDHOST7"},
+              "reference_profile": {"name": "Bob"}}, ["Bob", "BUILDHOST7"]),
+            ({"system": dict(who), "note": {"Bob": "owner",
+                                            "BUILDHOST7": "machine"}},
+             ["Bob", "BUILDHOST7"]),
+            ({"system": {"workdir": "/home/Al/Private Repo"}, "note": "Al"},
+             ['"Al"']),
+            ({"system": {"hostname": "pc"}, "note": "pc"}, ['"pc"']),
+            ({"note": {"source": "C:\\Documents and Settings\\Bob\\x",
+                       "owner": "Bob"}}, ["Bob"]),
+            ({"note": {"source": "~Bob", "owner": "Bob"}}, ["Bob"]),
+            ({"tools": {"python": "/home/Bob/bin/Bob"}}, ["Bob"]),
+        ]
+        for patch, forbidden in cases:
+            doc = copy.deepcopy(base)
+            doc.update(copy.deepcopy(patch))
+            scoring.validate_result(copy.deepcopy(doc))
+            clean, _c = anonymize(doc)
+            text = json.dumps(clean, ensure_ascii=False)
+            for word in forbidden:
+                self.assertNotIn(word, text, (patch, text))
+        # A benchmark id or meta value cannot shelter a name.
+        doc = copy.deepcopy(base)
+        doc["system"] = dict(who)
+        doc["benchmarks"]["Bob"] = copy.deepcopy(
+            doc["benchmarks"]["process.shell"])
+        doc["benchmarks"]["process.shell"]["meta"]["method"] = "Bob"
+        doc["note"] = "Bob"
+        self.assertNotIn("Bob", json.dumps(anonymize(doc)[0]))
+        # Keys that scrub to one placeholder keep both values.
+        doc = copy.deepcopy(base)
+        doc["system"] = dict(who)
+        doc["note"] = {"Bob": "owner", "BUILDHOST7": "machine"}
+        note = anonymize(doc)[0]["note"]
+        self.assertEqual(sorted(note.values()), ["machine", "owner"])
+
+    def test_schema_word_names_never_move_scores(self):
+        from agentperf import scoring
+        from agentperf.privacy import anonymize
+        ref = _load(PROFILES[0])
+        names = ("work", "pc", "go", "is", "ms", "git", "bash", "shell",
+                 "read", "copy", "linux", "standard", "sanitized")
+        for name in PROFILES:
+            base = _load(name)
+            before = scoring.score(base, ref)["agentmark"]
+            for who in names:
+                doc = copy.deepcopy(base)
+                doc["system"]["hostname"] = who
+                doc["system"]["workdir"] = "/home/{}/agentperf".format(who)
+                clean, _c = anonymize(doc)
+                self.assertEqual(clean["benchmarks"], base["benchmarks"],
+                                 (name, who))
+                self.assertEqual(clean["fingerprint"], base["fingerprint"])
+                self.assertEqual(scoring.score(clean, ref)["agentmark"],
+                                 before, (name, who))
+
     def test_bundled_share_output_unchanged_by_the_guard(self):
         from agentperf import scoring
         from agentperf.privacy import anonymize

@@ -85,16 +85,21 @@ the day), workdir and other home paths including everything under them
 and home folder names that contain spaces), volume names, process names
 (kept only as counts), security brand names (kept only as detected/active
 flags), tool paths (file names only), email and IP/MAC addresses, and
-user/host names - in any letter case - appearing in kept free-text
-fields. Paths are scrubbed wherever they appear, including in keys.
-Schema fields themselves (benchmark ids, categories, units, method
-strings, scoring config) are never rewritten, so a shared file scores
-exactly like the original, even when a host or user name is a common
-word such as "work" or "git". A free-text string that still looks
-identifying after scrubbing is withheld whole, never passed through.
-It prints every change. One limit: a hardware
-serial number typed into a free-text field by hand looks like any other hex
-string and cannot be detected; the fields where the suite itself records
+user/host names - in any letter case. Paths, addresses, and names are
+scrubbed wherever they appear: in keys, in benchmark ids and other schema
+fields, and in fields agentperf does not know. Real schema text (benchmark
+ids, categories, units, method strings, scoring config) never contains
+any of them, so it comes through byte-identical and a shared file scores
+exactly like the original, even when a host or user name is a word
+agentperf itself uses, such as "work" or "git". Such a name is kept where
+it is part of the schema and scrubbed everywhere else. A string that still
+looks identifying after scrubbing is withheld whole, never passed through.
+It prints every change.
+
+Limits: a one-letter user or host name, and the generic folders Shared,
+Public, and Default, are not treated as names. A hardware serial number
+typed into a free-text field by hand looks like any other hex string and
+cannot be detected; the fields where the suite itself records
 serial-bearing data are dropped outright. Still read the file once before
 you post it.
 
