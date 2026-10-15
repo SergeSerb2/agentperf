@@ -34,13 +34,13 @@ _HOME_CAPTURE = [
     # paths on the filesystems that produce them.
     # The name ends at a separator, a double quote, a line end, or the
     # end of the string; separators may repeat or mix ("C:\Users/Bob").
-    re.compile(r"/Users/+([^\n\"/\\]+?)(?=[/\\\"\n]|$)", re.IGNORECASE),
-    re.compile(r"/home/+([^\n\"/\\]+?)(?=[/\\\"\n]|$)", re.IGNORECASE),
-    # A Windows user folder can itself contain spaces ("Alice Smith").
-    re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+([^\\/\"\n]+?)(?=[\\/\"\n]|$)",
-               re.IGNORECASE),
-    re.compile(r"[A-Za-z]:[\\/]+Documents and Settings[\\/]+([^\\/\"\n]+?)"
-               r"(?=[\\/\"\n]|$)", re.IGNORECASE),
+    # The folder after a "home", "Users", or "Documents and Settings"
+    # segment is a user name in every path form: "/home/bob",
+    # "C:\Users\bob", "/mnt/c/Users/bob", "\\wsl.localhost\Ubuntu\home\bob",
+    # "\\server\Users\al". A Windows user folder can itself contain
+    # spaces ("Alice Smith").
+    re.compile(r"(?:^|[\\/])(?:home|Users|Documents and Settings)[\\/]+"
+               r"([^\\/\"\n]+?)(?=[\\/\"\n]|$)", re.IGNORECASE),
     re.compile(r"\\\\([^\\\s\"'/]+)"),          # UNC server name
     re.compile(r"(?<![\w:])//([^\s\"'/]+)/"),    # //server/share
     # ~user/... and a bare ~user, with any user name ("~_bob",
@@ -62,9 +62,9 @@ _HOME_CAPTURE = [
 # words that follow a quoted path is the safe direction (see the
 # residual check, which withholds anything still identifying). Folder
 # names match case-insensitively, as the filesystems treat them.
-# The last domain label starts with a letter, as every real top-level
-# domain and local host name does: "python@3.12" is a Homebrew path.
-_EMAIL = re.compile(r'(?:"[^"\n]*"|[\w.+-]+)@(?:[\w-]+\.)*[^\W\d_][\w-]*')
+# The last domain label holds a letter, as every real top-level domain
+# and host name does ("3build" too): "python@3.12" is a Homebrew path.
+_EMAIL = re.compile(r'(?:"[^"\n]*"|[\w.+-]+)@(?:[\w-]+\.)*[\w-]*[^\W\d_][\w-]*')
 _IPV4 = re.compile(r"(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9A-Za-z]|\.\d)")
 _MAC = re.compile(r"(?<![0-9A-Za-z])(?:(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}"
                   r"|[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})(?![0-9A-Za-z])")
@@ -165,37 +165,38 @@ def _candidate_names(doc) -> List[str]:
     """User/host names worth scrubbing as bare words: home-path users + hostname."""
     names: List[str] = []
 
+    def keep(name, minimum=2):
+        if len(name) >= minimum and name.lower() not in _NOT_NAMES \
+                and name not in names:
+            names.append(name)
+
     def add(name):
         name = unicodedata.normalize("NFC", (name or "").strip())
+        if not name:
+            return
+        # Two-letter names ("Al", a host called "pc") are scrubbed as
+        # whole words; one letter is too generic to be a name.
+        keep(name)
         folded = name.casefold()
         if folded != name.lower():
             add(folded)  # "Groß" is also "GROSS"
-        # A qualified Windows profile folder ("bob.DOMAIN") or host name
-        # starts with the account or machine name itself.
-        first = re.split(r"[^\w]+|_", name, maxsplit=1)[0]
-        if first != name and len(first) >= 2 and first.lower() not in _NOT_NAMES \
-                and first not in names:
-            names.append(first)
-        # Two-letter names ("Al", a host called "pc") are scrubbed as
-        # whole words; one letter is too generic to be a name.
-        if len(name) >= 2 and name.lower() not in _NOT_NAMES and name not in names:
-            names.append(name)
-        # "bob-" or ".bob" is also plain "bob".
-        core = re.sub(r"^[\W_]+|[\W_]+$", "", name)
-        if core != name and len(core) >= 2 and core.lower() not in _NOT_NAMES \
-                and core not in names:
-            names.append(core)
+        # "_bob.DOMAIN" (a qualified Windows profile folder), ".bob", and
+        # "bob-" all hold the plain account name "bob".
+        account = name.split(".")[0] or name
+        core = re.sub(r"^[\W_]+|[\W_]+$", "", account)
+        keep(account)
+        keep(core)
+        keep(re.sub(r"^[\W_]+|[\W_]+$", "", name))
+        first = re.split(r"[\W_]+", core, maxsplit=1)[0]
+        keep(first)
         # A captured "Alice Smith" also makes bare "Smith" identifying.
         for part in name.split():
-            if len(part) >= 3 and part.lower() not in _NOT_NAMES and part not in names:
-                names.append(part)
+            keep(part, 3)
         # So does the fragment of a hyphenated host or folder name
         # ("alicez" in "alicez-mac.local"); short fragments are too
         # generic to scrub as bare words.
         for part in re.split(r"[^A-Za-z0-9]+", name):
-            if len(part) >= 4 and part.lower() not in _NOT_NAMES \
-                    and part not in names:
-                names.append(part)
+            keep(part, 4)
 
     def walk(node):
         if isinstance(node, dict):
@@ -285,9 +286,10 @@ _RESIDUAL_RE = [
 ]
 
 
-# A home-path placeholder followed by a quote and more path: the folder
-# name itself held a quote ("Bob"Smith), so the scrub stopped early.
-_PLACEHOLDER_SPLIT = re.compile(r"<(?:user|share|volume)>\"[\w/\\.~-]")
+# A home-path placeholder followed by a quote and more path on the same
+# line: the folder name itself may have held a quote ('Bob"Smith', 'Bob"
+# Smith'), so the scrub stopped early. Fail closed.
+_PLACEHOLDER_SPLIT = re.compile(r"<(?:user|share|volume)>\"[^\n]*[/\\]")
 
 
 def _residual_path(text):
@@ -397,15 +399,18 @@ def _residual_text(text, names):
 # scrubbed: a filter can only promise to clean text whose shape it
 # knows. Each kept field is cleaned by where it sits:
 #
-# - "schema": schema text and known generic facts (benchmark titles
-#   and methods, versions, CPU models, OS names, tool versions). Paths
+# - "schema": schema text and fixed vocabularies (benchmark titles and
+#   methods, versions, OS family, architecture, file system type, shell
+#   and tool file names). Paths
 #   and addresses are scrubbed, and so is any user or host name that is
 #   not a word of agentperf's own vocabulary (_schema_words); a word
 #   still hiding such a name ("BobLaptop") withholds the string. Real
 #   schema text holds none of these, so it comes through byte-identical
 #   and a host named "process" or "git" cannot move a score.
 # - "full": free text (labels, skip reasons, probe errors, profile
-#   descriptions): paths, addresses, and every known user or host name
+#   descriptions) and text a person or vendor can set (power plan, OS
+#   version, CPU model, tool version lines): paths, addresses, and every
+#   known user or host name
 #   are scrubbed, and anything still identifying is withheld whole.
 # - "hex" (hashes), "day" (timestamps, cut to the day), and numbers
 #   must have their shape or are withheld.

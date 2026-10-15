@@ -82,8 +82,8 @@ agentperf share my-result.json
 so a note typed into the file by hand never travels. In what it keeps, it
 removes or generalizes: hostname, label, run ids (at any depth; timestamps
 are cut to the day), workdir and other home paths with everything under
-them (macOS, Linux, and Windows forms, UNC paths, `~/` and `~user`, and
-home folder names that contain spaces), volume names, process names (kept
+them (macOS, Linux, and Windows forms, UNC and WSL paths, `~/` and
+`~user`, and home folder names that contain spaces), volume names, process names (kept
 only as counts), security brand names (kept only as detected/active
 flags), tool paths (file names only), email, IP, and MAC addresses,
 Tailscale host names, and your user and host names in any letter case or

@@ -497,3 +497,49 @@ class ShareFourthReviewTest(unittest.TestCase):
                     self.assertEqual(clean["benchmarks"], base["benchmarks"])
                     self.assertEqual(scoring.compatibility_warnings(clean, ref),
                                      scoring.compatibility_warnings(doc, ref))
+
+
+class ShareFifthReviewTest(unittest.TestCase):
+    """Round-9 fifth verification (a1e0b54): N1-N4."""
+
+    def _plan(self, workdir, plan):
+        from agentperf.privacy import anonymize
+        doc = _load("windows-i7-12700k")
+        doc["system"]["workdir"] = workdir
+        doc["system"]["power_plan"] = plan
+        return anonymize(doc)[0]["system"]["power_plan"]
+
+    def test_quote_split_home_paths_fail_closed(self):
+        # N1
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        for bad in ('/Users/Bob"!Smith/PrivateClient/bash',
+                    '/Users/Bob" Smith/PrivateClient/bash'):
+            doc["skipped"] = {"process.node": "error: '{}'".format(bad)}
+            text = json.dumps(anonymize(copy.deepcopy(doc))[0])
+            self.assertNotIn("PrivateClient", text)
+            self.assertNotIn("Smith", text)
+
+    def test_digit_led_mail_host(self):
+        # N2
+        from agentperf.privacy import _scrub_paths
+        self.assertEqual(_scrub_paths("alice@3build"), "<email>")
+        self.assertEqual(_scrub_paths("python@3.12"), "python@3.12")
+
+    def test_qualified_and_punctuated_accounts(self):
+        # N3
+        for home, account in (("_bob.DOMAIN", "bob"), (".bob.DOMAIN", "bob"),
+                              ("_al.CORP", "al")):
+            plan = self._plan("C:\\Users\\{}\\agentperf".format(home),
+                              "{} performance".format(account))
+            self.assertNotIn(account, plan.lower(), home)
+
+    def test_unc_and_wsl_homes(self):
+        # N4, plus WSL views of Windows homes and other home roots.
+        for workdir, account in (
+                ("\\\\wsl.localhost\\Ubuntu\\home\\Bob\\agentperf", "Bob"),
+                ("\\\\fileserver\\Users\\Al\\agentperf", "Al"),
+                ("/mnt/c/Users/Carol/agentperf", "Carol"),
+                ("/var/home/dave/agentperf", "dave")):
+            plan = self._plan(workdir, "{} performance".format(account))
+            self.assertNotIn(account, plan, workdir)
