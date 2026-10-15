@@ -25,7 +25,7 @@ from typing import Dict, List, Tuple
 
 # Keys dropped from system outright.
 _DROP_SYSTEM = ("hostname", "workdir", "cwd", "top_processes", "physical_disks",
-                "fs_device", "fs_mount", "model_id")
+                "fs_device", "fs_mount", "model_id", "user", "home")
 
 # Server names in UNC paths: host names, not user names.
 _SERVER_CAPTURE = (
@@ -242,13 +242,18 @@ def _candidate_names(doc) -> List[str]:
         # "Users", quotes and spaces included ('a"bob').
         system = node.get("system") if isinstance(node, dict) else None
         if isinstance(system, dict):
-            for key in ("workdir", "cwd", "fs_mount", "fs_device"):
+            user = system.get("user")
+            if isinstance(user, str):
+                add(user, user=True)
+            for key in ("workdir", "cwd", "home", "fs_mount", "fs_device"):
                 value = system.get(key)
                 if isinstance(value, str):
                     parts = [p for p in re.split(r"[\\/]+", value) if p]
                     for i, part in enumerate(parts[:-1]):
                         if part.lower() in ("home", "users", "documents and settings"):
                             add(parts[i + 1], user=True)
+                    if key == "home" and parts:
+                        add(parts[-1], user=True)  # the home folder itself
 
     walk(doc)
     hosts(doc)
@@ -401,6 +406,36 @@ def _camel_joined(text, name):
         if left and right:
             return True
     return False
+
+
+# Messages that older versions stored with a full command line or path
+# ("Command '['/Users/bob/bin/bash', '-c', 'true']' timed out after 30.0
+# seconds", "[Errno 13] Permission denied: '/Users/bob/bin/zsh'") are
+# rewritten to the tool-name form today's runner writes, before any
+# scrubbing, so sharing an old result keeps its diagnosis.
+_STORED_TIMEOUT = re.compile(r"Command '\[(.*?)\]' timed out after ([\d.]+) seconds")
+_STORED_EXIT = re.compile(r"Command '\[(.*?)\]' returned non-zero exit status (-?\d+)\.?")
+_STORED_OSERROR = re.compile(r"(\[Errno -?\d+\] [^:'\n]+): '([^'\n]*)'")
+
+
+def _tool_of(args):
+    first = re.match(r"\s*'([^'\n]*)'", args)
+    return _tool_name(first.group(1) if first else "")
+
+
+def _tool_name(path):
+    base = re.split(r"[\\/]", path.rstrip("\\/"))[-1] if path else ""
+    return base if re.sub(r"\.exe\Z", "", base.lower()) in _KEPT_BASENAMES \
+        else "<path>"
+
+
+def _normalize_stored_errors(text):
+    text = _STORED_TIMEOUT.sub(lambda m: "{} timed out after {:g} s".format(
+        _tool_of(m.group(1)), round(float(m.group(2)), 1)), text)
+    text = _STORED_EXIT.sub(lambda m: "{} exited with code {}".format(
+        _tool_of(m.group(1)), m.group(2)), text)
+    return _STORED_OSERROR.sub(lambda m: "{}: '{}'".format(
+        m.group(1), _tool_name(m.group(2))), text)
 
 
 def _residual_path(text):
@@ -702,7 +737,8 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
 
     def clean_full(value):
         cleaned = _generalize_paths(_scrub_inside_words(
-            _scrub_text(value, names, counter), names, counter))
+            _scrub_text(_normalize_stored_errors(value), names, counter),
+            names, counter))
         # Fail closed: a free-text string still identifying after the
         # scrub is withheld whole instead of passing through.
         if _residual_text(cleaned, names):

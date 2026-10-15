@@ -70,9 +70,9 @@
 
 ## What a result file contains, and sharing
 
-A raw result contains your hostname, your workdir path (which includes your
-username), busiest process names, and security product names. **Do not post a
-raw result in public.** Use:
+A raw result contains your hostname, your account name and home folder, your
+workdir path, busiest process names, and security product names. **Do not post
+a raw result in public.** Use:
 
 ```sh
 agentperf share my-result.json

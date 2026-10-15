@@ -164,7 +164,7 @@ An installed skill folder holds `.agentperf-skill.json`: `{skill, package_versio
 | `run_id` | Short id for this run. Removed by `share`, at every depth. |
 | `started_at`, `duration_s`, `profile` | Start time (UTC), seconds taken, `quick` or `standard`. |
 | `corpus.files`, `corpus.bytes`, `corpus.fixture_hash` | Test project size and input hash. |
-| `system` | Probed facts: CPU, OS, disks, power, load, security agents, WSL flags, work folder facts. Holds private names; `share` generalizes it. |
+| `system` | Probed facts: CPU, OS, disks, power, load, security agents, WSL flags, work folder facts. Holds private names, including `user` and `home` (who ran it), which `share` uses to find those names elsewhere and then drops; `share` generalizes the rest. |
 | `tools` | Tool name to path used. `share` keeps file names only. |
 | `tool_versions` | First version line per tool. Part of any tool gap is here. |
 | `benchmarks` | Test id to measurement entry. See below. |

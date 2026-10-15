@@ -697,3 +697,55 @@ class ShareEighthReviewTest(unittest.TestCase):
         from agentperf.privacy import _scrub_paths
         self.assertEqual(_scrub_paths("alice@123"), "<email>")
         self.assertEqual(_scrub_paths("python@3.12"), "python@3.12")
+
+
+class ShareFinalReviewTest(unittest.TestCase):
+    """Round-9 final verification (12339b0): identity hints and stored
+    error messages."""
+
+    def test_account_name_found_with_work_folder_outside_home(self):
+        from agentperf.privacy import anonymize
+        doc = _load("windows-i7-12700k")
+        doc["system"].update({"workdir": "D:\\\\bench\\\\agentperf", "user": "Alice",
+                              "home": "C:\\\\Users\\\\alice.CORP",
+                              "power_plan": "Alice Performance"})
+        clean = anonymize(doc)[0]["system"]
+        self.assertEqual(clean["power_plan"], "<name> Performance")
+        self.assertNotIn("user", clean)
+        self.assertNotIn("home", clean)
+
+    def test_the_probe_records_who_ran_it(self):
+        from agentperf import env
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        system = env.collect(tmp)
+        self.assertIn("home", system)
+
+    def test_stored_error_messages_keep_their_diagnosis(self):
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["skipped"] = {
+            "process.shell": "error: Command '['/Users/Bob/bin/bash', "
+                             "'--noprofile', '-c', 'true']' timed out after "
+                             "30.0 seconds",
+            "process.node": "error: Command '['/opt/Acme/run.sh', 'x']' "
+                            "returned non-zero exit status 2.",
+            "diag.login_shell": "error: [Errno 13] Permission denied: "
+                                "'/Users/Alice Smith/bin/zsh'"}
+        skipped = anonymize(doc)[0]["skipped"]
+        self.assertEqual(skipped["process.shell"], "error: bash timed out after 30 s")
+        self.assertEqual(skipped["process.node"], "error: <path> exited with code 2")
+        self.assertEqual(skipped["diag.login_shell"],
+                         "error: [Errno 13] Permission denied: 'zsh'")
+
+    def test_runner_formats_os_errors_by_tool_name(self):
+        import subprocess
+        from agentperf.runner import _describe_error
+        try:
+            subprocess.run([os.path.join(tempfile.gettempdir(), "no-such-dir",
+                                         "zsh")])
+        except OSError as exc:
+            self.assertEqual(_describe_error(exc).split("] ", 1)[1],
+                             "{}: 'zsh'".format(exc.strerror))
+        exc = subprocess.TimeoutExpired(["/x/bash"], 29.99993)
+        self.assertEqual(_describe_error(exc), "bash timed out after 30 s")

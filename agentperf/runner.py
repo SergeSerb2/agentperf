@@ -194,8 +194,12 @@ def _describe_error(exc) -> str:
         cmd = exc.cmd if isinstance(exc.cmd, (list, tuple)) else [exc.cmd]
         tool = os.path.basename(str(cmd[0]).replace("\\", "/")) if cmd else "command"
         if isinstance(exc, subprocess.TimeoutExpired):
-            return "{} timed out after {:g} s".format(tool, exc.timeout)
+            return "{} timed out after {:g} s".format(tool, round(exc.timeout, 1))
         return "{} exited with code {}".format(tool, exc.returncode)
+    if isinstance(exc, OSError) and exc.filename:
+        # "[Errno 13] Permission denied: 'zsh'", not the path to it.
+        name = os.path.basename(str(exc.filename).replace("\\", "/"))
+        return "[Errno {}] {}: '{}'".format(exc.errno, exc.strerror, name)
     return str(exc)
 
 

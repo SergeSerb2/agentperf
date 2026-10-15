@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import getpass
 import os
 import platform
 import re
@@ -45,6 +46,14 @@ def collect(workdir: str) -> Dict[str, object]:
         "logical_cpus": os.cpu_count(),
         "workdir": workdir,
     }
+    # Who ran it, for `share` only: it finds these names everywhere else
+    # in the result (a power plan called "Alice Performance") and then
+    # drops both fields, even when the work folder is outside home.
+    try:
+        info["user"] = getpass.getuser()
+    except Exception:  # no login name in this environment
+        pass
+    info["home"] = os.path.expanduser("~")
     usage = shutil.disk_usage(workdir)
     info["disk_total_gb"] = round(usage.total / 1e9, 1)
     info["disk_free_gb"] = round(usage.free / 1e9, 1)

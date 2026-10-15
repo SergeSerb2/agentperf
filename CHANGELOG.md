@@ -177,9 +177,13 @@ established (see the shell note).
     absolute path in free text (a skip reason, a probe error) is replaced
     whole, keeping only a tool name such as `bash` and a plain diagnostic
     after it ("<path>/bash exited with code 7"), because a folder such as
-    `D:\Clients\Acme` can name a client. Failed spawns, timeouts, and
-    non-zero exits now report the tool's file name ("bash timed out after
-    30 s"), never its path or command line. A custom login shell from
+    `D:\Clients\Acme` can name a client. Timeouts, non-zero exits, and
+    OS errors on a tool now report the tool's file name ("bash timed out
+    after 30 s", "[Errno 13] Permission denied: 'zsh'"), never its path or
+    command line, and `share` rewrites the older stored forms of these
+    messages the same way. A result now records who ran it
+    (`system.user`, `system.home`) so `share` can find that name anywhere,
+    even with a work folder outside home; `share` always drops both. A custom login shell from
     `$SHELL` is free text; known shell and tool names stay as written.
     The home folder in the work directory is read literally, quotes and
     all, and numeric single-label mail hosts (`alice@123`) are caught.
