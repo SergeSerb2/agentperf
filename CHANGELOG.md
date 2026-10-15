@@ -6,7 +6,7 @@ fingerprint all match, against the same reference file. Version strings never
 decide comparability; reports warn when two files differ on any part. A suite
 change that moves scores bumps the minor version and says what moved.
 
-## 0.4.0 - 2026-10-13
+## 0.4.0 - 2026-10-15
 
 Teach coding agents to run agentperf well. **Scores do not move in this
 release**: the suite stays 0.3.0, the measurement fingerprint is unchanged,
