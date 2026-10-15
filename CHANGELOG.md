@@ -177,8 +177,14 @@ established (see the shell note).
     absolute path in free text (a skip reason, a probe error) is replaced
     whole, keeping only a tool name such as `bash` and a plain diagnostic
     after it ("<path>/bash exited with code 7"), because a folder such as
-    `D:\Clients\Acme` can name a client. A failed spawn now reports the
-    tool's file name, not its path. Scores do not move: every bundled profile scores exactly
+    `D:\Clients\Acme` can name a client. Failed spawns, timeouts, and
+    non-zero exits now report the tool's file name ("bash timed out after
+    30 s"), never its path or command line. A custom login shell from
+    `$SHELL` is free text; known shell and tool names stay as written.
+    The home folder in the work directory is read literally, quotes and
+    all, and numeric single-label mail hosts (`alice@123`) are caught.
+    `share` prints a summary of what it changed, including timestamps
+    cut to the day. Scores do not move: every bundled profile scores exactly
     as before, and its `share` output is byte-identical.
   - Smaller correctness fixes: a failed launch inside the 32-way
     parallel spawn reaps the shells that did start; a cached tool must

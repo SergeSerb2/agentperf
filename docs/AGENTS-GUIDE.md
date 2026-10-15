@@ -170,7 +170,7 @@ Rules:
 
 Raw results hold hostnames, home paths, process names, and security product names. Summaries (`--json`) are derived from raw results and carry labels and paths too. Neither is fit to post.
 
-- For public sharing, run `agentperf share result.json`. Post only that output. It prints every change it made. Skim the file once anyway.
+- For public sharing, run `agentperf share result.json`. Post only that output. It prints a summary of what it changed. Skim the file once anyway.
 - In chat, quote scores, verdicts, causes, and fixes. Leave hostnames, usernames, full paths, IP addresses, and process lists out unless the fix needs one.
 - `SECURITY.md` lists exactly what each command touches. Read it before your first `live` or `remote` job on a new user's machines.
 

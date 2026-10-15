@@ -27,6 +27,11 @@ from typing import Dict, List, Tuple
 _DROP_SYSTEM = ("hostname", "workdir", "cwd", "top_processes", "physical_disks",
                 "fs_device", "fs_mount", "model_id")
 
+# Server names in UNC paths: host names, not user names.
+_SERVER_CAPTURE = (
+    re.compile(r"\\\\([^\\\s\"'/]+)"),          # UNC server name
+    re.compile(r"(?<![\w:])//([^\s\"'/]+)/"),    # //server/share
+)
 _HOME_CAPTURE = [
     # POSIX user folders can contain spaces and apostrophes too
     # ("/Users/Alice Smith", "/Users/O'Brien"). Matching is
@@ -44,8 +49,7 @@ _HOME_CAPTURE = [
     # A folder name that itself starts with a quote ('"bob').
     re.compile(r"(?:^|[\\/])(?:home|Users|Documents and Settings)[\\/]+"
                r"(\"[^\\/\n]+?)(?=[\\/\n]|$)", re.IGNORECASE),
-    re.compile(r"\\\\([^\\\s\"'/]+)"),          # UNC server name
-    re.compile(r"(?<![\w:])//([^\s\"'/]+)/"),    # //server/share
+    *_SERVER_CAPTURE,
     # ~user/... and a bare ~user, with any user name ("~_bob",
     # "~123bob", "~.bob", accented letters) that has a letter in it.
     re.compile(r"~([^\s/\\\"~<][^\s/\\\"~]*)[/\\]"),
@@ -65,9 +69,11 @@ _HOME_CAPTURE = [
 # words that follow a quoted path is the safe direction (see the
 # residual check, which withholds anything still identifying). Folder
 # names match case-insensitively, as the filesystems treat them.
-# The last domain label holds a letter, as every real top-level domain
-# and host name does ("3build" too): "python@3.12" is a Homebrew path.
-_EMAIL = re.compile(r'(?:"[^"\n]*"|[\w.+-]+)@(?:[\w-]+\.)*[\w-]*[^\W\d_][\w-]*')
+# A dotted domain's last label holds a letter, as every real top-level
+# domain does, so "python@3.12" (a Homebrew path) is not an address; a
+# single-label host may be anything ("alice@buildbox", "alice@123").
+_EMAIL = re.compile(r'(?:"[^"\n]*"|[\w.+-]+)@(?:(?:[\w-]+\.)+[\w-]*[^\W\d_][\w-]*'
+                    r'|[\w-]+(?![\w.-]))')
 _IPV4 = re.compile(r"(?<![0-9])(?<!\d\.)(?:\d{1,3}\.){3}\d{1,3}(?![0-9]|\.\d)")
 _MAC = re.compile(r"(?<![0-9A-Za-z])(?:(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}"
                   r"|[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})(?![0-9A-Za-z])")
@@ -175,7 +181,7 @@ def _candidate_names(doc) -> List[str]:
                 and name not in names:
             names.append(name)
 
-    def add(name):
+    def add(name, user=False):
         name = unicodedata.normalize("NFC", (name or "").strip())
         if not name:
             return
@@ -184,7 +190,7 @@ def _candidate_names(doc) -> List[str]:
         keep(name)
         folded = name.casefold()
         if folded != name.lower():
-            add(folded)  # "Groß" is also "GROSS"
+            add(folded, user)  # "Groß" is also "GROSS"
         # "_bob.DOMAIN" (a qualified Windows profile folder), ".bob", and
         # "bob-" all hold the plain account name "bob".
         account = name.split(".")[0] or name
@@ -200,9 +206,9 @@ def _candidate_names(doc) -> List[str]:
         # So does the fragment of a hyphenated host or folder name
         # ("alicez" in "alicez-mac.local"); short fragments are too
         # generic to scrub as bare words.
-        for part in re.split(r"[^A-Za-z0-9]+", name):
+        for part in re.split(r"[^\w]+|_", name):
             if part.lower() not in _DNS_SUFFIXES:
-                keep(part, 4)
+                keep(part, 3 if user else 4)
 
     def walk(node):
         if isinstance(node, dict):
@@ -215,7 +221,7 @@ def _candidate_names(doc) -> List[str]:
         elif isinstance(node, str):
             for rx in _HOME_CAPTURE:
                 for match in rx.finditer(node):
-                    add(match.group(1))
+                    add(match.group(1), user=rx not in _SERVER_CAPTURE)
 
     def hosts(node):
         # system.hostname wherever a system object sits, nested too.
@@ -230,8 +236,23 @@ def _candidate_names(doc) -> List[str]:
             for child in node:
                 hosts(child)
 
+    def literal_homes(node):
+        # The workdir (and the other dropped path fields) is a path, not
+        # free text: its home folder is the whole segment after "home" or
+        # "Users", quotes and spaces included ('a"bob').
+        system = node.get("system") if isinstance(node, dict) else None
+        if isinstance(system, dict):
+            for key in ("workdir", "cwd", "fs_mount", "fs_device"):
+                value = system.get(key)
+                if isinstance(value, str):
+                    parts = [p for p in re.split(r"[\\/]+", value) if p]
+                    for i, part in enumerate(parts[:-1]):
+                        if part.lower() in ("home", "users", "documents and settings"):
+                            add(parts[i + 1], user=True)
+
     walk(doc)
     hosts(doc)
+    literal_homes(doc)
     return names
 
 
@@ -310,9 +331,10 @@ _PATH_START = re.compile(r"(?<![\w<>.:~/\\-])(?:[A-Za-z]:[\\/]|\\\\|/)(?=[^\s\"'
 _KEPT_PATH = re.compile(r"(?:/Users/<user>|/home/<user>|/root/<user>|/Volumes/<volume>"
                         r"|[A-Za-z]:\\Users\\<user>|\\\\<host>\\<share>|//<host>/<share>)"
                         r"[:,;.)\]]*\Z")
-_KEPT_BASENAMES = frozenset(("bash", "sh", "zsh", "dash", "cmd", "powershell",
-                             "pwsh", "git", "rg", "grep", "tar", "node", "npx",
-                             "python", "python3", "claude", "codex", "true"))
+_KEPT_BASENAMES = frozenset(("bash", "sh", "zsh", "dash", "fish", "ksh", "tcsh",
+                             "csh", "cmd", "powershell", "pwsh", "git", "rg",
+                             "grep", "tar", "bsdtar", "node", "npx", "python",
+                             "python3", "claude", "codex", "true", "rg.exe"))
 
 
 _DIAGNOSTIC = re.compile(
@@ -560,13 +582,13 @@ for _key in ("lower_is_better", "weight", "scored", "ops", "median", "min",
              "run_samples", "run_medians", "runs"):
     _ENTRY_FIELDS[_key] = "schema"
 # Methods, implementations, and shell kinds are part of the fingerprint;
-# the shell file name ("bash", "bash.exe") and Python version are fixed
-# vocabularies too.
+# the shell file name is kept when agentperf knows it ("bash",
+# "bash.exe"); a custom login shell from $SHELL is free text.
 _META_FIELDS = {"method": "schema", "impl": "schema", "shell_kind": "schema",
                 "env_policy": "schema", "mode": "schema",
                 "matched_files": "schema", "matched_lines": "schema",
                 "tls_verified": "schema", "workers": "schema",
-                "shell": "schema", "python": "schema"}
+                "shell": "exe", "python": "schema"}
 _TOOL_FIELDS = ("bash", "claude", "codex", "exec", "git", "grep", "node",
                 "powershell", "pwsh", "rg", "shell", "tar")
 _TOP_FIELDS = {
@@ -663,6 +685,7 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
     withheld = [0]
     nested_ids = [0]
     dropped = [0]
+    days = [0]
     # Names that are not agentperf vocabulary are identity wherever
     # they appear, schema positions included.
     strict_names = [n for n in names if not _is_schema_word(n)]
@@ -695,9 +718,18 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
             return value if _HEX.match(value) else withhold()
         if mode == "day":
             day = value[:10]
-            return day if _DAY.match(day) else withhold()
+            if not _DAY.match(day):
+                return withhold()
+            if day != value:
+                days[0] += 1
+            return day
         if mode == "full":
             return clean_full(value)
+        if mode == "exe":
+            # A shell or tool file name: kept when it is one agentperf
+            # knows ("bash", "git.exe"); a custom $SHELL is free text.
+            known = re.sub(r"\.exe\Z", "", value.lower()) in _KEPT_BASENAMES
+            return clean_schema(value) if known else clean_full(value)
         return clean_schema(value)
 
     def child_mode(ctx, key):
@@ -717,7 +749,7 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
             # version line is vendor text and can name a build host.
             if key not in _TOOL_FIELDS:
                 return None
-            return "schema" if ctx == "tools" else "full"
+            return "exe" if ctx == "tools" else "full"
         if ctx == "skipped":
             return "full"
         if ctx in _OBJECT_FIELDS:
@@ -762,6 +794,8 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         return leaf(node, ctx)
 
     out = walk(out, "root")
+    if days[0]:
+        changes.append("cut {} timestamp(s) to the day".format(days[0]))
     if dropped[0]:
         changes.append("dropped {} field(s) agentperf does not write".format(
             dropped[0]))

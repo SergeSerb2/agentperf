@@ -643,3 +643,57 @@ class ShareSeventhReviewTest(unittest.TestCase):
                          'with code 7', {"workdir": '/home/"bob/agentperf'})
         self.assertNotIn("bob", out)
         self.assertNotIn("PrivateClient", out)
+
+
+class ShareEighthReviewTest(unittest.TestCase):
+    """Round-9 eighth verification (ce97845): Z1-Z5."""
+
+    def test_interior_quote_in_a_home_folder(self):
+        # Z1
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["system"]["workdir"] = '/Users/a"bob/agentperf'
+        doc["tool_versions"]["bash"] = 'GNU bash, built by a"bob'
+        text = json.dumps(anonymize(doc)[0]["tool_versions"])
+        self.assertNotIn("bob", text)
+
+    def test_custom_shell_and_tool_names_are_free_text(self):
+        # Z2: a known shell stays; a custom $SHELL loses the name in it.
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["system"]["workdir"] = "/home/Al/agentperf"
+        doc["benchmarks"]["diag.login_shell"]["meta"]["shell"] = "alshell"
+        doc["tools"]["shell"] = "alshell"
+        clean = anonymize(doc)[0]
+        self.assertNotIn("al", clean["benchmarks"]["diag.login_shell"]["meta"]["shell"])
+        self.assertNotIn("al", clean["tools"]["shell"])
+        doc = _load("macos-m1-pro")
+        doc["system"]["hostname"] = "bash"
+        clean = anonymize(doc)[0]
+        self.assertEqual(clean["benchmarks"]["process.shell"]["meta"]["shell"],
+                         doc["benchmarks"]["process.shell"]["meta"]["shell"])
+        self.assertEqual(clean["tools"], doc["tools"])
+
+    def test_timeouts_and_exits_name_the_tool(self):
+        # Z3
+        import subprocess
+        from agentperf.runner import _describe_error
+        exc = subprocess.TimeoutExpired(["/Users/Bob/x/bash", "-c", "true"], 30)
+        self.assertEqual(_describe_error(exc), "bash timed out after 30 s")
+        exc = subprocess.CalledProcessError(3, ["C:\\\\Users\\\\Bob\\\\git.exe", "status"])
+        self.assertEqual(_describe_error(exc), "git.exe exited with code 3")
+
+    def test_timestamp_cut_is_reported(self):
+        # Z4
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["started_at"] = "2026-10-13T10:11:12"
+        clean, changes = anonymize(doc)
+        self.assertEqual(clean["started_at"], "2026-10-13")
+        self.assertTrue(any("to the day" in c for c in changes), changes)
+
+    def test_numeric_single_label_mail_host(self):
+        # Z5
+        from agentperf.privacy import _scrub_paths
+        self.assertEqual(_scrub_paths("alice@123"), "<email>")
+        self.assertEqual(_scrub_paths("python@3.12"), "python@3.12")

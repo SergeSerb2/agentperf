@@ -7,6 +7,7 @@ import fnmatch
 import math
 import os
 import shutil
+import subprocess
 import traceback
 import uuid
 from typing import Callable, Dict, List, Optional
@@ -186,6 +187,18 @@ def _acquire_lock(workdir: str) -> str:
     return path
 
 
+def _describe_error(exc) -> str:
+    """A skip reason names the tool, not its path or command line: skip
+    reasons end up in shared results."""
+    if isinstance(exc, (subprocess.TimeoutExpired, subprocess.CalledProcessError)):
+        cmd = exc.cmd if isinstance(exc.cmd, (list, tuple)) else [exc.cmd]
+        tool = os.path.basename(str(cmd[0]).replace("\\", "/")) if cmd else "command"
+        if isinstance(exc, subprocess.TimeoutExpired):
+            return "{} timed out after {:g} s".format(tool, exc.timeout)
+        return "{} exited with code {}".format(tool, exc.returncode)
+    return str(exc)
+
+
 def run_suite(workdir: str, profile: str = "standard", label: Optional[str] = None,
               only: Optional[List[str]] = None, exclude: Optional[List[str]] = None,
               fetch: bool = False, clean: bool = False,
@@ -257,7 +270,7 @@ def _run_locked(workdir: str, profile: str, label: Optional[str],
             log("{} skipped: {}".format(prefix, exc))
             continue
         except Exception as exc:  # a broken benchmark must not end the run
-            skipped[b.id] = "setup error: {}".format(exc)
+            skipped[b.id] = "setup error: {}".format(_describe_error(exc))
             log("{} setup error: {}".format(prefix, exc))
             log(traceback.format_exc(limit=3))
             continue
@@ -277,7 +290,7 @@ def _run_locked(workdir: str, profile: str, label: Optional[str],
                 if now() - t_bench > b.budget_s * budget_mult and len(samples) >= 3:
                     break
         except Exception as exc:
-            skipped[b.id] = "error: {}".format(exc)
+            skipped[b.id] = "error: {}".format(_describe_error(exc))
             log("{} error: {}".format(prefix, exc))
         finally:
             if cleanup:

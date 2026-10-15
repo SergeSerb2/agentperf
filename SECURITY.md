@@ -98,7 +98,7 @@ everywhere else. Text a person or vendor can set (a power plan name, the
 OS version, the CPU model, tool version lines) is scrubbed like free text,
 so a host named "apple" turns "Apple M1 Pro" into "<name> M1 Pro"; that
 over-scrubbing is deliberate. A string that still looks identifying after
-scrubbing is withheld whole, never passed through. It prints every change.
+scrubbing is withheld whole, never passed through. It prints a summary of what it changed.
 
 Limits: `share` is a careful filter for files agentperf writes, not a
 guarantee for text typed into them. A one-letter user or host name, and
