@@ -12,6 +12,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -583,8 +584,9 @@ class ShareSixthReviewTest(unittest.TestCase):
             doc = _load("windows-i7-12700k")
             doc["system"].update(system)
             doc["system"]["power_plan"] = plan
-            self.assertEqual(anonymize(doc)[0]["system"]["power_plan"],
-                             "<withheld>")
+            out = anonymize(doc)[0]["system"]["power_plan"]
+            self.assertNotIn(plan[:2], out)
+            self.assertIn(out, ("<name>Laptop", "<withheld>"))
         doc = _load("windows-i7-12700k")
         doc["system"]["workdir"] = "/home/Al/w"
         doc["system"]["power_plan"] = "Balanced"
@@ -598,3 +600,46 @@ class ShareSixthReviewTest(unittest.TestCase):
         doc["system"]["hostname"] = "work"
         doc["system"]["fs_type"] = "fuse.work"
         self.assertNotIn("work", anonymize(doc)[0]["system"]["fs_type"])
+
+
+class ShareSeventhReviewTest(unittest.TestCase):
+    """Round-9 seventh verification (98e1b2d): Q1-Q3."""
+
+    def _skip(self, reason, system=None):
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["system"].update(system or {})
+        doc["skipped"] = {"process.node": reason}
+        return anonymize(doc)[0]["skipped"]["process.node"]
+
+    def test_diagnostics_survive_path_replacement(self):
+        # Q1: the tool and its exit status stay readable.
+        self.assertEqual(self._skip("error: /opt/x/bash exited with code 7"),
+                         "error: <path>/bash exited with code 7")
+        # Something path-like later on the line keeps the path running.
+        self.assertNotIn("Sons", self._skip("D:\\Clients\\Acme and Sons\\x exited"))
+
+    def test_spawn_errors_name_the_tool_not_its_path(self):
+        from agentperf.benches.process import _spawn_ms
+        with self.assertRaises(RuntimeError) as caught:
+            _spawn_ms([sys.executable, "-c", "import sys; sys.exit(7)"], 1)
+        self.assertEqual(str(caught.exception),
+                         "{} exited with code 7".format(
+                             os.path.basename(sys.executable)))
+
+    def test_short_and_uncased_names_inside_words(self):
+        # Q2
+        for system, text, name in (({"workdir": "/home/Al/w"}, "Albuild", "Al"),
+                                   ({"hostname": "pc"}, "pcbuild", "pc"),
+                                   ({"workdir": "/home/\u674e\u660e/w"},
+                                    "\u674e\u660eLaptop", "\u674e\u660e")):
+            self.assertNotIn(name, self._skip(text, system))
+        self.assertEqual(self._skip("Balanced", {"workdir": "/home/Al/w"}),
+                         "Balanced")
+
+    def test_home_folder_starting_with_a_quote(self):
+        # Q3
+        out = self._skip('error: /tmp/home/"bob/PrivateClient/bash exited '
+                         'with code 7', {"workdir": '/home/"bob/agentperf'})
+        self.assertNotIn("bob", out)
+        self.assertNotIn("PrivateClient", out)

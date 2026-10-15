@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 
@@ -28,7 +29,9 @@ def _spawn_ms(argv, count: int, env=None) -> float:
                               stderr=subprocess.DEVNULL, timeout=SPAWN_TIMEOUT_S,
                               env=env, **_NO_WINDOW)
         if proc.returncode != 0:
-            raise RuntimeError("{} exited with code {}".format(argv[0], proc.returncode))
+            # The tool's file name, not its path: skip reasons are shared.
+            raise RuntimeError("{} exited with code {}".format(
+                os.path.basename(argv[0]), proc.returncode))
     return (now() - t0) * 1000.0 / count
 
 

@@ -171,10 +171,14 @@ established (see the shell note).
     any Unicode form or case folding, nested host names, IPv6 behind a
     label (`IPv6:2001:db8::4`), addresses wrapped in underscores or after
     a dot, dotted MAC addresses, quoted email local parts, `user@host`
-    addresses, and short names glued to a word (`pcLaptop`). Any other
+    addresses, home folders whose name starts with a quote, and names
+    glued into a word that is not agentperf vocabulary (`pcbuild`,
+    `AlLaptop`, CJK names), which are replaced inside that word. Any other
     absolute path in free text (a skip reason, a probe error) is replaced
-    whole, keeping only a tool name such as `bash`, because a folder such
-    as `D:\Clients\Acme` can name a client. Scores do not move: every bundled profile scores exactly
+    whole, keeping only a tool name such as `bash` and a plain diagnostic
+    after it ("<path>/bash exited with code 7"), because a folder such as
+    `D:\Clients\Acme` can name a client. A failed spawn now reports the
+    tool's file name, not its path. Scores do not move: every bundled profile scores exactly
     as before, and its `share` output is byte-identical.
   - Smaller correctness fixes: a failed launch inside the 32-way
     parallel spawn reaps the shells that did start; a cached tool must

@@ -41,6 +41,9 @@ _HOME_CAPTURE = [
     # spaces ("Alice Smith").
     re.compile(r"(?:^|[\\/])(?:home|Users|Documents and Settings)[\\/]+"
                r"([^\\/\"\n]+?)(?=[\\/\"\n]|$)", re.IGNORECASE),
+    # A folder name that itself starts with a quote ('"bob').
+    re.compile(r"(?:^|[\\/])(?:home|Users|Documents and Settings)[\\/]+"
+               r"(\"[^\\/\n]+?)(?=[\\/\n]|$)", re.IGNORECASE),
     re.compile(r"\\\\([^\\\s\"'/]+)"),          # UNC server name
     re.compile(r"(?<![\w:])//([^\s\"'/]+)/"),    # //server/share
     # ~user/... and a bare ~user, with any user name ("~_bob",
@@ -157,6 +160,8 @@ def _scrub_ipv6(value: str, counter=None) -> str:
     return "".join(out) + value[pos:]
 
 
+# Network suffixes of a host name ("mac.local"), not part of a name.
+_DNS_SUFFIXES = {"local", "localdomain", "lan"}
 # Generic folders, not people (documented in SECURITY.md).
 _NOT_NAMES = {"<user>", "shared", "public", "default", "users", "home"}
 
@@ -196,7 +201,8 @@ def _candidate_names(doc) -> List[str]:
         # ("alicez" in "alicez-mac.local"); short fragments are too
         # generic to scrub as bare words.
         for part in re.split(r"[^A-Za-z0-9]+", name):
-            keep(part, 4)
+            if part.lower() not in _DNS_SUFFIXES:
+                keep(part, 4)
 
     def walk(node):
         if isinstance(node, dict):
@@ -289,7 +295,7 @@ _RESIDUAL_RE = [
 # A home-path placeholder followed by a quote and more path on the same
 # line: the folder name itself may have held a quote ('Bob"Smith', 'Bob"
 # Smith'), so the scrub stopped early. Fail closed.
-_PLACEHOLDER_SPLIT = re.compile(r"<(?:user|share|volume)>\"[^\n]*[/\\]")
+_PLACEHOLDER_SPLIT = re.compile(r"<(?:user|share|volume|path)>\"[^\n]*[/\\]")
 
 
 # Any absolute path left in free text after the home-path scrub
@@ -309,6 +315,12 @@ _KEPT_BASENAMES = frozenset(("bash", "sh", "zsh", "dash", "cmd", "powershell",
                              "python", "python3", "claude", "codex", "true"))
 
 
+_DIAGNOSTIC = re.compile(
+    r"(?:exited|failed|returned|timed|not|is|was|were|has|had|does|did|"
+    r"cannot|could|can't|denied|missing|with|code|exit|error|\(|\[|\d)",
+    re.IGNORECASE)
+
+
 def _path_end(text, start):
     line_end = text.find("\n", start)
     line_end = len(text) if line_end == -1 else line_end
@@ -324,8 +336,14 @@ def _path_end(text, start):
             if close + 1 >= len(text) or not text[close + 1].isalnum():
                 return close
             pos = close + 1
-    close = text.find('"', start, line_end)
-    return line_end if close == -1 else close
+    # Unquoted: a folder name can hold spaces, so the path runs to the
+    # line end, unless a plain diagnostic follows and nothing after it
+    # looks like a path ("…/bash exited with code 7").
+    for gap in re.finditer(r"\s+", text[start:line_end]):
+        rest = text[start + gap.end():line_end]
+        if _DIAGNOSTIC.match(rest) and not re.search(r"[\\/]", rest):
+            return start + gap.start()
+    return line_end
 
 
 def _generalize_paths(text):
@@ -456,6 +474,26 @@ def _hidden_name(text, names):
     text = unicodedata.normalize("NFC", text).casefold()
     tokens = [t for t in re.split(r"\W+", text) if t and t not in words]
     return any(len(n) >= 3 and n.casefold() in t for t in tokens for n in names)
+
+
+def _scrub_inside_words(text, names, counter=None):
+    """A known name glued into a word that is not agentperf vocabulary
+    ("Albuild", "pcbuild", "\u674e\u660eLaptop") is replaced inside that word.
+    Vocabulary words ("Balanced") are left whole."""
+    words = _schema_words()
+
+    def fix(match):
+        word = match.group(0)
+        if word.casefold() in words:
+            return word
+        for name in names:
+            if len(name) >= 2:
+                word, n = re.subn(re.escape(name), "<name>", word,
+                                  flags=re.IGNORECASE)
+                if counter is not None:
+                    counter[0] += n
+        return word
+    return re.sub(r"[^\W_]+", fix, text)
 
 
 def _residual_text(text, names):
@@ -640,7 +678,8 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         return cleaned
 
     def clean_full(value):
-        cleaned = _generalize_paths(_scrub_text(value, names, counter))
+        cleaned = _generalize_paths(_scrub_inside_words(
+            _scrub_text(value, names, counter), names, counter))
         # Fail closed: a free-text string still identifying after the
         # scrub is withheld whole instead of passing through.
         if _residual_text(cleaned, names):
