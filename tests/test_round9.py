@@ -471,8 +471,8 @@ class ShareFourthReviewTest(unittest.TestCase):
 
     def test_single_label_mail_domain(self):
         # R6; "python@3.12" (Homebrew) is not an address.
-        clean = self._share(skipped={"process.node": "/opt/alice@buildbox/bash "
-                                     "and /opt/homebrew/opt/python@3.12/bin"})
+        clean = self._share(skipped={"process.node": "alice@buildbox ran "
+                                     "python@3.12"})
         text = clean["skipped"]["process.node"]
         self.assertNotIn("alice@buildbox", text)
         self.assertIn("python@3.12", text)
@@ -543,3 +543,58 @@ class ShareFifthReviewTest(unittest.TestCase):
                 ("/var/home/dave/agentperf", "dave")):
             plan = self._plan(workdir, "{} performance".format(account))
             self.assertNotIn(account, plan, workdir)
+
+
+class ShareSixthReviewTest(unittest.TestCase):
+    """Round-9 sixth verification (1eab866): P1-P3, plus any absolute
+    path in free text."""
+
+    def _skip(self, reason, system=None):
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["system"].update(system or {})
+        doc["skipped"] = {"process.node": reason}
+        return anonymize(doc)[0]
+
+    def test_absolute_paths_in_free_text_are_replaced(self):
+        # P1, and non-home folders that can name a client.
+        clean = self._skip("error: No such file: "
+                           "'/opt/build.10.20.30.40/bin/bash'")
+        self.assertEqual(clean["skipped"]["process.node"],
+                         "error: No such file: '<path>/bash'")
+        clean = self._skip("cannot read 'D:\\Client Plans\\Acme\\notes.txt': "
+                           "denied")
+        self.assertEqual(clean["skipped"]["process.node"],
+                         "cannot read '<path>': denied")
+        clean = self._skip("missing C:\\Program Files\\Git\\bin\\bash.exe")
+        self.assertEqual(clean["skipped"]["process.node"], "missing <path>/bash.exe")
+        clean = self._skip("no '/Users/O'Brien Plans/x' and '/srv/Acme Co/y' here")
+        self.assertNotIn("Brien", json.dumps(clean))
+        self.assertNotIn("Acme", json.dumps(clean))
+        for text in ("HTTP 403 from https://api.github.com/repos",
+                     "rg 14 MB/s and/or N/A", "zlib/1.2.12 liblzma/5.4.3"):
+            self.assertEqual(self._skip(text)["skipped"]["process.node"], text)
+
+    def test_short_names_glued_to_words(self):
+        # P2
+        for system, plan in (({"workdir": "/home/Al/w"}, "AlLaptop"),
+                             ({"hostname": "pc"}, "pcLaptop")):
+            from agentperf.privacy import anonymize
+            doc = _load("windows-i7-12700k")
+            doc["system"].update(system)
+            doc["system"]["power_plan"] = plan
+            self.assertEqual(anonymize(doc)[0]["system"]["power_plan"],
+                             "<withheld>")
+        doc = _load("windows-i7-12700k")
+        doc["system"]["workdir"] = "/home/Al/w"
+        doc["system"]["power_plan"] = "Balanced"
+        from agentperf.privacy import anonymize
+        self.assertEqual(anonymize(doc)[0]["system"]["power_plan"], "Balanced")
+
+    def test_configurable_file_system_type(self):
+        # P3
+        from agentperf.privacy import anonymize
+        doc = _load("wsl2-i7-12700k")
+        doc["system"]["hostname"] = "work"
+        doc["system"]["fs_type"] = "fuse.work"
+        self.assertNotIn("work", anonymize(doc)[0]["system"]["fs_type"])

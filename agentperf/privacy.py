@@ -65,7 +65,7 @@ _HOME_CAPTURE = [
 # The last domain label holds a letter, as every real top-level domain
 # and host name does ("3build" too): "python@3.12" is a Homebrew path.
 _EMAIL = re.compile(r'(?:"[^"\n]*"|[\w.+-]+)@(?:[\w-]+\.)*[\w-]*[^\W\d_][\w-]*')
-_IPV4 = re.compile(r"(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9A-Za-z]|\.\d)")
+_IPV4 = re.compile(r"(?<![0-9])(?<!\d\.)(?:\d{1,3}\.){3}\d{1,3}(?![0-9]|\.\d)")
 _MAC = re.compile(r"(?<![0-9A-Za-z])(?:(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}"
                   r"|[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})(?![0-9A-Za-z])")
 _TSNET = re.compile(r"[\w.-]*\.ts\.net(?![0-9A-Za-z-])", re.IGNORECASE)
@@ -292,6 +292,77 @@ _RESIDUAL_RE = [
 _PLACEHOLDER_SPLIT = re.compile(r"<(?:user|share|volume)>\"[^\n]*[/\\]")
 
 
+# Any absolute path left in free text after the home-path scrub
+# ("D:\Client Plans\Acme\agentperf", "/opt/build.10.0.0.5/bin/bash"): its
+# folders can name a client, a project, or a machine, so the path is
+# replaced whole. A quoted path ends at its closing quote; an unquoted one
+# runs to the next double quote or line end, like home paths, because a
+# folder name can hold spaces. A trailing tool name ("bash", "git.exe")
+# stays, so a skip reason still says what was missing. URLs ("https://")
+# and units ("MB/s") are not paths.
+_PATH_START = re.compile(r"(?<![\w<>.:~/\\-])(?:[A-Za-z]:[\\/]|\\\\|/)(?=[^\s\"'])")
+_KEPT_PATH = re.compile(r"(?:/Users/<user>|/home/<user>|/root/<user>|/Volumes/<volume>"
+                        r"|[A-Za-z]:\\Users\\<user>|\\\\<host>\\<share>|//<host>/<share>)"
+                        r"[:,;.)\]]*\Z")
+_KEPT_BASENAMES = frozenset(("bash", "sh", "zsh", "dash", "cmd", "powershell",
+                             "pwsh", "git", "rg", "grep", "tar", "node", "npx",
+                             "python", "python3", "claude", "codex", "true"))
+
+
+def _path_end(text, start):
+    line_end = text.find("\n", start)
+    line_end = len(text) if line_end == -1 else line_end
+    quote = text[start - 1] if start and text[start - 1] in "'\"" else None
+    if quote:
+        # The closing quote is one not followed by a letter or digit
+        # ("O'Brien" keeps going).
+        pos = start
+        while True:
+            close = text.find(quote, pos, line_end)
+            if close == -1:
+                return line_end
+            if close + 1 >= len(text) or not text[close + 1].isalnum():
+                return close
+            pos = close + 1
+    close = text.find('"', start, line_end)
+    return line_end if close == -1 else close
+
+
+def _generalize_paths(text):
+    out, pos = [], 0
+    for match in _PATH_START.finditer(text):
+        start = match.start()
+        if start < pos:
+            continue
+        end = _path_end(text, start)
+        token = text[start:end]
+        if _KEPT_PATH.match(token):
+            continue
+        tail = re.sub(r"[:,;.)\]]+\Z", "", token)
+        base = re.split(r"[\\/]", tail.rstrip("\\/"))[-1]
+        keep = re.sub(r"\.exe\Z", "", base.lower()) in _KEPT_BASENAMES
+        out.append(text[pos:start] + ("<path>/" + base if keep else "<path>")
+                   + token[len(tail):])
+        pos = end
+    return "".join(out) + text[pos:]
+
+
+def _camel_joined(text, name):
+    """A short name glued to a word at a case or digit change ("AlLaptop",
+    "pcLaptop", "LaptopAl", "pc2"), which whole-word matching misses."""
+    for match in re.finditer(re.escape(name), text, re.IGNORECASE):
+        i, j = match.start(), match.end()
+        left = i == 0 or not text[i - 1].isalnum() \
+            or (text[i - 1].islower() and text[i].isupper()) \
+            or text[i - 1].isdigit() != text[i].isdigit()
+        right = j == len(text) or not text[j].isalnum() \
+            or (text[j].isupper() and text[j - 1].islower()) \
+            or text[j].isdigit() != text[j - 1].isdigit()
+        if left and right:
+            return True
+    return False
+
+
 def _residual_path(text):
     if _PLACEHOLDER_SPLIT.search(text):
         return True
@@ -388,9 +459,11 @@ def _hidden_name(text, names):
 
 
 def _residual_text(text, names):
-    lowered = unicodedata.normalize("NFC", text).casefold()
+    text = unicodedata.normalize("NFC", text)
+    lowered = text.casefold()
     return _residual_path(text) or any(
-        len(name) >= 3 and name.casefold() in lowered for name in names)
+        name.casefold() in lowered if len(name) >= 3
+        else _camel_joined(text, name) for name in names)
 
 
 # --- What share keeps ------------------------------------------------
@@ -400,8 +473,8 @@ def _residual_text(text, names):
 # knows. Each kept field is cleaned by where it sits:
 #
 # - "schema": schema text and fixed vocabularies (benchmark titles and
-#   methods, versions, OS family, architecture, file system type, shell
-#   and tool file names). Paths
+#   methods, versions, OS family, architecture, shell and tool file
+#   names). Paths
 #   and addresses are scrubbed, and so is any user or host name that is
 #   not a word of agentperf's own vocabulary (_schema_words); a word
 #   still hiding such a name ("BobLaptop") withholds the string. Real
@@ -409,9 +482,10 @@ def _residual_text(text, names):
 #   and a host named "process" or "git" cannot move a score.
 # - "full": free text (labels, skip reasons, probe errors, profile
 #   descriptions) and text a person or vendor can set (power plan, OS
-#   version, CPU model, tool version lines): paths, addresses, and every
-#   known user or host name
-#   are scrubbed, and anything still identifying is withheld whole.
+#   version, CPU model, file system type, tool version lines): paths,
+#   addresses, and every known user or host name are scrubbed, any other
+#   absolute path is replaced whole, and anything still identifying is
+#   withheld whole.
 # - "hex" (hashes), "day" (timestamps, cut to the day), and numbers
 #   must have their shape or are withheld.
 #
@@ -420,14 +494,16 @@ _SYSTEM_FIELDS = {
     # Fixed vocabularies the probes report (platform names, file system
     # types, power source, virtualization kind).
     "os_family": "schema", "os": "schema", "machine": "schema",
-    "python": "schema", "python_impl": "schema", "fs_type": "schema",
-    "power_source": "schema", "governor": "schema",
-    "virtualization": "schema", "wsl": "schema",
+    "python": "schema", "python_impl": "schema", "power_source": "schema",
+    "wsl": "schema",
     # Already de-branded before the walk.
     "security_agents": "schema", "antivirus": "schema",
     # Text a person or vendor can set (a power plan name, a custom
     # /etc/os-release, a VM's CPU string, mount options): free text.
+    # A FUSE subtype ("fuse.<name>"), a kernel governor, and the
+    # virtualization string can be configured too.
     "os_release": "full", "os_version": "full", "cpu_model": "full",
+    "fs_type": "full", "governor": "full", "virtualization": "full",
     "fs_options": "full", "power_plan": "full", "spotlight": "full",
     "filevault": "full", "probe_errors": "full",
 }
@@ -564,7 +640,7 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         return cleaned
 
     def clean_full(value):
-        cleaned = _scrub_text(value, names, counter)
+        cleaned = _generalize_paths(_scrub_text(value, names, counter))
         # Fail closed: a free-text string still identifying after the
         # scrub is withheld whole instead of passing through.
         if _residual_text(cleaned, names):
