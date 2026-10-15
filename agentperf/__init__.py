@@ -12,7 +12,7 @@ SUITE_VERSION = "0.3.0"
 SCHEMA_VERSION = 1
 # Fallback for checkouts and .pyz files, which carry no dist metadata.
 # Keep this equal to the version in pyproject.toml.
-_PACKAGE_VERSION_FALLBACK = "0.4.0"
+_PACKAGE_VERSION_FALLBACK = "0.4.1"
 
 
 def _package_version() -> str:

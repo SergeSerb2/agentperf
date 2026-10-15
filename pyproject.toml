@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentperf"
-version = "0.4.0"
+version = "0.4.1"
 description = "Measure how well a computer serves AI coding agents - and explain why"
 readme = "README.md"
 requires-python = ">=3.8"
