@@ -86,14 +86,18 @@ them (macOS, Linux, and Windows forms, UNC paths, `~/` and `~user`, and
 home folder names that contain spaces), volume names, process names (kept
 only as counts), security brand names (kept only as detected/active
 flags), tool paths (file names only), email, IP, and MAC addresses,
-Tailscale host names, and your user and host names in any letter case.
-Schema text (benchmark ids, categories, units, method strings, scoring
-config) holds none of these, so it comes through byte-identical and a
-shared file scores exactly like the original, even when a host or user
-name is a word agentperf itself uses, such as "work" or "git": such a
-name is left alone inside schema text and scrubbed everywhere else. A
-string that still looks identifying after scrubbing is withheld whole,
-never passed through. It prints every change.
+Tailscale host names, and your user and host names in any letter case or
+Unicode form. Schema text (benchmark ids, categories, units, method
+strings, scoring config) holds none of these, so it comes through
+byte-identical and a shared file scores exactly like the original, even
+when a host or user name is a word agentperf itself uses, such as "work"
+or "git": such a name is left alone inside schema text and scrubbed
+everywhere else. Text a person or vendor can set (a power plan name, the
+OS version, the CPU model, tool version lines) is scrubbed like free
+text, so a host named "apple" turns "Apple M1 Pro" into "<name> M1 Pro";
+that over-scrubbing is deliberate. A string that still looks identifying
+after scrubbing is withheld whole, never passed through. It prints every
+change.
 
 Limits: `share` is a careful filter for files agentperf writes, not a
 guarantee for text typed into them. A one-letter user or host name, and

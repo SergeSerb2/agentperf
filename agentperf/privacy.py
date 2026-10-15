@@ -20,6 +20,7 @@ import copy
 import ipaddress
 import os
 import re
+import unicodedata
 from typing import Dict, List, Tuple
 
 # Keys dropped from system outright.
@@ -61,7 +62,9 @@ _HOME_CAPTURE = [
 # words that follow a quoted path is the safe direction (see the
 # residual check, which withholds anything still identifying). Folder
 # names match case-insensitively, as the filesystems treat them.
-_EMAIL = re.compile(r'(?:"[^"\n]*"|[\w.+-]+)@[\w-]+(?:\.[\w-]+)+')
+# The last domain label starts with a letter, as every real top-level
+# domain and local host name does: "python@3.12" is a Homebrew path.
+_EMAIL = re.compile(r'(?:"[^"\n]*"|[\w.+-]+)@(?:[\w-]+\.)*[^\W\d_][\w-]*')
 _IPV4 = re.compile(r"(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9A-Za-z]|\.\d)")
 _MAC = re.compile(r"(?<![0-9A-Za-z])(?:(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}"
                   r"|[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})(?![0-9A-Za-z])")
@@ -102,52 +105,58 @@ _HOME_RE = [
 _IPV6_RUN = re.compile(r"[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(?:%[\w.-]+)?")
 
 
-def _ipv6_span(run):
-    """(start, end) of the longest valid IPv6 address in *run*, or None."""
-    starts = [0] + [i + 1 for i, c in enumerate(run) if c == ":"]
-    best = None
-    for i in starts:
-        for j in range(len(run), i + 1, -1):
-            if j < len(run) and run[j] not in ":.%":
-                continue
-            token = run[i:j].rstrip(".")
-            if token.count(":") < 2 or (best and len(token) <= best[1] - best[0]):
-                continue
-            try:
-                addr = ipaddress.ip_address(token.split("%")[0])
-            except ValueError:
-                continue
-            if isinstance(addr, ipaddress.IPv6Address) \
-                    and not (addr.is_unspecified or addr.is_loopback):
-                best = (i, i + len(token))
+def _ipv6_spans(value):
+    """(start, end) of each IPv6 address in *value*, longest first per run.
+
+    Every cut at a colon is tried, so a label in front ("IPv6:2001:db8::4",
+    whose "6" is a hex digit) cannot hide the address behind it. An
+    address must not touch a letter or digit on either side, which keeps
+    "std::string" and similar text intact."""
+    spans = []
+    for match in _IPV6_RUN.finditer(value):
+        run, base = match.group(0), match.start()
+        pos = 0
+        while pos < len(run):
+            best = None
+            starts = [pos] + [i + 1 for i in range(pos, len(run)) if run[i] == ":"]
+            for i in starts:
+                left = value[base + i - 1] if base + i else ""
+                if left.isalnum():
+                    continue
+                for j in range(len(run), i + 1, -1):
+                    token = run[i:j]
+                    if token.count(":") < 2 or token.endswith("."):
+                        continue
+                    if best and len(token) <= best[1] - best[0]:
+                        break
+                    right = value[base + j] if base + j < len(value) else ""
+                    if right.isalnum():
+                        continue
+                    try:
+                        addr = ipaddress.ip_address(token.split("%")[0])
+                    except ValueError:
+                        continue
+                    if isinstance(addr, ipaddress.IPv6Address) \
+                            and not (addr.is_unspecified or addr.is_loopback):
+                        best = (i, j)
+                        break
+            if not best:
                 break
-    return best
+            spans.append((base + best[0], base + best[1]))
+            pos = best[1]
+    return spans
 
 
 def _scrub_ipv6(value: str, counter=None) -> str:
-    def repl(match):
-        run = match.group(0)
-        start = match.start()
-        # An address glued to letters or digits ("std::string") is not
-        # one; letters around a run are checked on the original string.
-        before = value[start - 1] if start else ""
-        after = value[match.end()] if match.end() < len(value) else ""
-        out, pos = [], 0
-        while pos < len(run):
-            span = _ipv6_span(run[pos:])
-            if not span:
-                break
-            a, b = pos + span[0], pos + span[1]
-            left = run[a - 1] if a else before
-            right = run[b] if b < len(run) else after
-            if left.isalnum() or right.isalnum():
-                break
-            out.append(run[pos:a] + "<ip>")
-            pos = b
-            if counter is not None:
-                counter[0] += 1
-        return "".join(out) + run[pos:]
-    return _IPV6_RUN.sub(repl, value)
+    out, pos = [], 0
+    for a, b in _ipv6_spans(value):
+        out.append(value[pos:a] + "<ip>")
+        pos = b
+        if counter is not None:
+            counter[0] += 1
+    return "".join(out) + value[pos:]
+
+
 # Generic folders, not people (documented in SECURITY.md).
 _NOT_NAMES = {"<user>", "shared", "public", "default", "users", "home"}
 
@@ -157,7 +166,16 @@ def _candidate_names(doc) -> List[str]:
     names: List[str] = []
 
     def add(name):
-        name = (name or "").strip()
+        name = unicodedata.normalize("NFC", (name or "").strip())
+        folded = name.casefold()
+        if folded != name.lower():
+            add(folded)  # "Groß" is also "GROSS"
+        # A qualified Windows profile folder ("bob.DOMAIN") or host name
+        # starts with the account or machine name itself.
+        first = re.split(r"[^\w]+|_", name, maxsplit=1)[0]
+        if first != name and len(first) >= 2 and first.lower() not in _NOT_NAMES \
+                and first not in names:
+            names.append(first)
         # Two-letter names ("Al", a host called "pc") are scrubbed as
         # whole words; one letter is too generic to be a name.
         if len(name) >= 2 and name.lower() not in _NOT_NAMES and name not in names:
@@ -226,6 +244,9 @@ def _scrub_text(value, names=(), counter=None):
     """Paths, addresses, and bare user/host names: free text only."""
     if not isinstance(value, str):
         return value
+    # One form for every text: a decomposed "Bo\u0308b" from a macOS path
+    # and a composed "B\u00f6b" elsewhere are the same name.
+    value = unicodedata.normalize("NFC", value)
     value = _scrub_paths(value, counter)
     for name in names:
         # Case variants of a known name are the same name ("ALICE").
@@ -264,7 +285,14 @@ _RESIDUAL_RE = [
 ]
 
 
+# A home-path placeholder followed by a quote and more path: the folder
+# name itself held a quote ("Bob"Smith), so the scrub stopped early.
+_PLACEHOLDER_SPLIT = re.compile(r"<(?:user|share|volume)>\"[\w/\\.~-]")
+
+
 def _residual_path(text):
+    if _PLACEHOLDER_SPLIT.search(text):
+        return True
     return any(rx.search(text) for rx in _RESIDUAL_RE) or \
         _scrub_ipv6(text) != text
 
@@ -300,10 +328,30 @@ def _schema_words():
             for sep in (r"\W+", r"[^A-Za-z0-9]+"):
                 words.update(w.lower() for w in re.split(sep, node) if w)
 
+    import ast
     from . import benches  # noqa: F401  (registers every benchmark)
     from .benches.process import ENV_POLICY
     from .registry import REGISTRY
+    from .runner import PROFILES
     from .util import NODE_ENV_REMOVED, SHELL_ENV_REMOVED
+    # Text the benchmarks write into meta (methods, implementations,
+    # shell kinds) comes from string literals in their source.
+    for info in pkgutil.iter_modules(benches.__path__):
+        try:
+            tree = ast.parse(pkgutil.get_data(
+                "agentperf", "benches/{}.py".format(info.name)).decode("utf-8"))
+        except (OSError, SyntaxError, ValueError, AttributeError):
+            continue
+        docstrings = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body and isinstance(body[0], ast.Expr):
+                docstrings.add(id(body[0].value))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in docstrings:
+                take(node.value)
+    take(["system", list(PROFILES)])
     for b in REGISTRY:
         take(b.id)
         take(b.describe())
@@ -332,14 +380,15 @@ def _hidden_name(text, names):
     """A known name inside a word that is not agentperf vocabulary
     ("BobLaptop"): the whole-word scrub cannot reach it."""
     words = _schema_words()
-    tokens = [t for t in re.split(r"\W+", text.lower()) if t and t not in words]
-    return any(len(n) >= 3 and n.lower() in t for t in tokens for n in names)
+    text = unicodedata.normalize("NFC", text).casefold()
+    tokens = [t for t in re.split(r"\W+", text) if t and t not in words]
+    return any(len(n) >= 3 and n.casefold() in t for t in tokens for n in names)
 
 
 def _residual_text(text, names):
-    lowered = text.lower()
+    lowered = unicodedata.normalize("NFC", text).casefold()
     return _residual_path(text) or any(
-        len(name) >= 3 and name.lower() in lowered for name in names)
+        len(name) >= 3 and name.casefold() in lowered for name in names)
 
 
 # --- What share keeps ------------------------------------------------
@@ -363,16 +412,19 @@ def _residual_text(text, names):
 #
 # Keys are cleaned like schema text.
 _SYSTEM_FIELDS = {
-    # Generic facts that explain the measurements.
-    "os_family": "schema", "os": "schema", "os_release": "schema",
-    "os_version": "schema", "machine": "schema", "python": "schema",
-    "python_impl": "schema", "cpu_model": "schema", "fs_type": "schema",
-    "fs_options": "schema", "power_source": "schema", "power_plan": "schema",
-    "governor": "schema", "spotlight": "schema", "filevault": "schema",
+    # Fixed vocabularies the probes report (platform names, file system
+    # types, power source, virtualization kind).
+    "os_family": "schema", "os": "schema", "machine": "schema",
+    "python": "schema", "python_impl": "schema", "fs_type": "schema",
+    "power_source": "schema", "governor": "schema",
     "virtualization": "schema", "wsl": "schema",
     # Already de-branded before the walk.
     "security_agents": "schema", "antivirus": "schema",
-    "probe_errors": "full",
+    # Text a person or vendor can set (a power plan name, a custom
+    # /etc/os-release, a VM's CPU string, mount options): free text.
+    "os_release": "full", "os_version": "full", "cpu_model": "full",
+    "fs_options": "full", "power_plan": "full", "spotlight": "full",
+    "filevault": "full", "probe_errors": "full",
 }
 for _key in ("logical_cpus", "physical_cpus", "perf_cores", "efficiency_cores",
              "ram_gb", "disk_total_gb", "disk_free_gb", "load_avg_start",
@@ -388,9 +440,14 @@ for _key in ("lower_is_better", "weight", "scored", "ops", "median", "min",
              "max", "p10", "p90", "n", "cv", "mean", "noisy", "samples",
              "run_samples", "run_medians", "runs"):
     _ENTRY_FIELDS[_key] = "schema"
-_META_FIELDS = ("method", "impl", "shell_kind", "env_policy", "shell",
-                "python", "mode", "matched_files", "matched_lines",
-                "tls_verified", "workers")
+# Methods, implementations, and shell kinds are part of the fingerprint;
+# the shell file name ("bash", "bash.exe") and Python version are fixed
+# vocabularies too.
+_META_FIELDS = {"method": "schema", "impl": "schema", "shell_kind": "schema",
+                "env_policy": "schema", "mode": "schema",
+                "matched_files": "schema", "matched_lines": "schema",
+                "tls_verified": "schema", "workers": "schema",
+                "shell": "schema", "python": "schema"}
 _TOOL_FIELDS = ("bash", "claude", "codex", "exec", "git", "grep", "node",
                 "powershell", "pwsh", "rg", "shell", "tar")
 _TOP_FIELDS = {
@@ -398,7 +455,7 @@ _TOP_FIELDS = {
     "package_version": "schema", "profile": "schema", "fingerprint": "hex",
     "started_at": "day", "duration_s": "schema", "label": "full",
     "corpus": "corpus", "system": "system", "tools": "tools",
-    "tool_versions": "tools", "benchmarks": "benchmarks",
+    "tool_versions": "tool_versions", "benchmarks": "benchmarks",
     "skipped": "skipped", "measurement_env": "measurement_env",
     "scoring_config": "scoring_config", "combined_runs": "runs",
     "merged_runs": "runs", "reference_profile": "refprofile",
@@ -534,9 +591,13 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         if ctx == "entry":
             return _ENTRY_FIELDS.get(key)
         if ctx == "meta":
-            return "schema" if key in _META_FIELDS else None
-        if ctx == "tools":
-            return "schema" if key in _TOOL_FIELDS else None
+            return _META_FIELDS.get(key)
+        if ctx in ("tools", "tool_versions"):
+            # File names ("git", "bash.exe") are a fixed vocabulary; a
+            # version line is vendor text and can name a build host.
+            if key not in _TOOL_FIELDS:
+                return None
+            return "schema" if ctx == "tools" else "full"
         if ctx == "skipped":
             return "full"
         if ctx in _OBJECT_FIELDS:
@@ -576,7 +637,7 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
                         for v in node]
             return [walk(v, ctx) for v in node]
         if ctx in ("root", "system", "benchmarks", "entry", "meta", "tools",
-                   "skipped") or ctx in _OBJECT_FIELDS:
+                   "tool_versions", "skipped") or ctx in _OBJECT_FIELDS:
             return withhold() if isinstance(node, str) else node
         return leaf(node, ctx)
 

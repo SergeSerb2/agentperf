@@ -421,3 +421,79 @@ class ShareAllowlistTest(unittest.TestCase):
             self.assertEqual(sorted(clean["benchmarks"][bid]), sorted(entry))
         self.assertEqual(clean["fingerprint"], doc["fingerprint"])
         self.assertEqual(clean["measurement_env"], doc["measurement_env"])
+
+
+class ShareFourthReviewTest(unittest.TestCase):
+    """Round-9 fourth verification (c1a0a77): R1-R7."""
+
+    def _share(self, patch_system=None, **fields):
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["system"].update(patch_system or {})
+        doc.update(fields)
+        return anonymize(doc)[0]
+
+    def test_machine_text_is_scrubbed_like_free_text(self):
+        # R1: a custom power plan named after the host; R3: a domain-
+        # qualified Windows profile folder hides the short account name.
+        clean = self._share({"hostname": "work",
+                             "power_plan": "work performance"})
+        self.assertNotIn("work", clean["system"]["power_plan"])
+        clean = self._share({"workdir": "C:\\Users\\bob.DOMAIN\\agentperf",
+                             "power_plan": "bob performance"})
+        self.assertNotIn("bob", clean["system"]["power_plan"])
+
+    def test_ipv6_behind_a_hex_label(self):
+        # R2
+        from agentperf.privacy import _scrub_ipv6
+        self.assertEqual(_scrub_ipv6("IPv6:2001:db8::4"), "IPv6:<ip>")
+        self.assertEqual(_scrub_ipv6("[2001:db8::4]:443"), "[<ip>]:443")
+        for text in ("std::string", "12:30:45", "::1"):
+            self.assertEqual(_scrub_ipv6(text), text)
+
+    def test_unicode_equivalent_names(self):
+        # R4: macOS paths can be decomposed; case folding maps ß to ss.
+        for home, printed in (("Bo\u0308b", "B\u00f6b"), ("Gro\u00df", "GROSS")):
+            clean = self._share({"workdir": "/Users/{}/agentperf".format(home)},
+                                tool_versions={"git": "git version 2.51.0." + printed})
+            self.assertNotIn(printed, clean["tool_versions"]["git"])
+
+    def test_quote_inside_a_home_folder_name(self):
+        # R5
+        clean = self._share(skipped={"process.node": 'Permission denied: '
+                                     '/Users/Bob"Smith/PrivateClient/bash'})
+        self.assertNotIn("PrivateClient", json.dumps(clean))
+        # A path ending at a closing quote is ordinary and kept scrubbed.
+        clean = self._share(skipped={"process.node": 'cannot open '
+                                     '"/Users/Bob/x": denied'})
+        self.assertEqual(clean["skipped"]["process.node"],
+                         'cannot open "/Users/<user>": denied')
+
+    def test_single_label_mail_domain(self):
+        # R6; "python@3.12" (Homebrew) is not an address.
+        clean = self._share(skipped={"process.node": "/opt/alice@buildbox/bash "
+                                     "and /opt/homebrew/opt/python@3.12/bin"})
+        text = clean["skipped"]["process.node"]
+        self.assertNotIn("alice@buildbox", text)
+        self.assertIn("python@3.12", text)
+
+    def test_generated_values_survive_colliding_names(self):
+        # R7: a host named "quick" must not rename the quick profile.
+        from agentperf import scoring
+        from agentperf.privacy import anonymize
+        ref = _load(PROFILES[0])
+        for name in PROFILES:
+            base = _load(name)
+            for profile in ("quick", "standard"):
+                for who in ("quick", "standard", "system", "sh", "bash",
+                            "process", "work"):
+                    doc = copy.deepcopy(base)
+                    doc["profile"] = profile
+                    doc["system"]["hostname"] = who
+                    doc["system"]["workdir"] = "/home/{}/w".format(who)
+                    clean, _c = anonymize(doc)
+                    self.assertEqual(clean["profile"], profile, (name, who))
+                    self.assertEqual(clean["kind"], base["kind"])
+                    self.assertEqual(clean["benchmarks"], base["benchmarks"])
+                    self.assertEqual(scoring.compatibility_warnings(clean, ref),
+                                     scoring.compatibility_warnings(doc, ref))
