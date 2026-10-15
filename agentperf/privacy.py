@@ -534,7 +534,7 @@ def _schema_words():
     take([list(_CATEGORIES), ENV_POLICY, list(SHELL_ENV_REMOVED),
           list(NODE_ENV_REMOVED), "sanitized removed NODE_OPTIONS",
           list(_SYSTEM_FIELDS), list(_ENTRY_FIELDS), list(_META_FIELDS),
-          list(_TOOL_FIELDS), list(_TOP_FIELDS)])
+          list(_TOOL_FIELDS), list(_TOP_FIELDS), sorted(_KEPT_BASENAMES)])
     try:
         index = json.loads(pkgutil.get_data(
             "agentperf", "references/index.json").decode("utf-8"))
@@ -795,8 +795,9 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         if mode == "exe":
             # A shell or tool file name: kept when it is one agentperf
             # knows ("bash", "git.exe"); a custom $SHELL is free text.
-            known = re.sub(r"\.exe\Z", "", value.lower()) in _KEPT_BASENAMES
-            return clean_schema(value) if known else clean_full(value)
+            if re.sub(r"\.exe\Z", "", value.lower()) in _KEPT_BASENAMES:
+                return value  # "dash" stays "dash" for an account "ash"
+            return clean_full(value)
         return clean_schema(value)
 
     def child_mode(ctx, key):

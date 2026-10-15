@@ -186,7 +186,9 @@ established (see the shell note).
     "Unable to create '<path>': No such file or directory"). The progress
     log on your own screen still prints the full error, for local
     debugging. The generic label is built from the scrubbed facts, so
-    sharing a shared file gives the same file back. A result now records who ran it
+    sharing a shared file gives the same file back; a label you chose
+    with `share --label` is replaced by the generic one unless you pass
+    `--label` again. A result now records who ran it
     (`system.user`, `system.home`) so `share` can find that name anywhere,
     even with a work folder outside home; `share` always drops both. A custom login shell from
     `$SHELL` is free text; known shell and tool names stay as written.

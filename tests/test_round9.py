@@ -820,3 +820,14 @@ class ShareReleaseReviewTest(unittest.TestCase):
             doc["system"]["workdir"] = "/Users/{}/agentperf".format(host)
             once = anonymize(doc)[0]
             self.assertEqual(anonymize(copy.deepcopy(once))[0], once, host)
+
+    def test_known_shells_stay_exact_for_any_account(self):
+        from agentperf.privacy import anonymize
+        for account, shell in (("ash", "dash"), ("as", "bash"), ("sh", "zsh")):
+            doc = _load("macos-m1-pro")
+            doc["system"].update(user=account, home="/Users/" + account)
+            doc["benchmarks"]["diag.login_shell"]["meta"]["shell"] = shell
+            clean = anonymize(doc)[0]
+            self.assertEqual(clean["benchmarks"]["diag.login_shell"]["meta"]["shell"],
+                             shell, account)
+            self.assertEqual(clean["benchmarks"], doc["benchmarks"])
