@@ -249,6 +249,7 @@ _STRUCT_KEEP_KEYS = {
     "measurement_env": ("shell_launch", "node_spawn_diagnostic"),
     "scoring_config": ("category_weights",),
 }
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 _CATEGORIES = ("process", "files", "search", "git", "compute",
                "transfer", "ipc", "network", "diag")
 
@@ -340,7 +341,12 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
 
     def clean_string(value, mode):
         if mode == "keep" or value in protected_strings:
-            return value
+            # Schema text never holds a home path, address, or host
+            # name; one that does was added by hand and is scrubbed
+            # like any other path instead of passing through.
+            if not _residual_path(value):
+                return value
+            mode = "path"
         if mode == "path":
             cleaned = _scrub_paths(value, counter)
             if _residual_path(cleaned):
@@ -356,7 +362,8 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         return cleaned
 
     def clean_key(key):
-        if not isinstance(key, str) or key in protected_strings:
+        if not isinstance(key, str) or (key in protected_strings
+                                        and not _residual_path(key)):
             return key
         cleaned = _scrub_paths(key, counter)
         if _residual_path(cleaned):
@@ -415,7 +422,11 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
                 # forms only, never bare names.
                 key = clean_key(k)
                 if k == "started_at" and isinstance(v, str):
-                    out_dict[key] = v[:10]
+                    # A timestamp is cut to the day; anything else under
+                    # this name is free text and is scrubbed as such.
+                    day = v[:10]
+                    out_dict[key] = day if _DAY.match(day) \
+                        else clean_string(v, "full")
                     continue
                 out_dict[key] = scrub(v, child_ctx(ctx, k))
             return out_dict

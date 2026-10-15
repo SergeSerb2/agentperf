@@ -155,8 +155,11 @@ established (see the shell note).
     or unrecorded policy would otherwise be relabelled). `share` keeps
     only the known fields of `corpus`, `measurement_env`, and
     `scoring_config` verbatim; anything else in them is scrubbed like
-    other free text. Scores do not move: every bundled profile scores
-    exactly as before.
+    other free text. A `started_at` that is not a timestamp is scrubbed
+    rather than cut to ten characters, and a schema-position string
+    (a benchmark id, a kept field) that holds a home path is scrubbed
+    too. Scores do not move: every bundled profile scores exactly as
+    before, and its `share` output is byte-identical.
   - Smaller correctness fixes: a failed launch inside the 32-way
     parallel spawn reaps the shells that did start; a cached tool must
     exit 0 to count as working; every network test records its own TLS

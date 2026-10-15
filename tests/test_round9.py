@@ -84,6 +84,41 @@ class ShareUnknownFieldsTest(unittest.TestCase):
                              scoring.shell_env_policies(doc), name)
 
 
+    def test_nested_started_at_and_schema_strings_are_scrubbed(self):
+        # Round-9 verification: a nested "started_at" was cut to ten
+        # characters without scrubbing ("/home/Bob/"), and schema-
+        # position strings (benchmark ids, kept fields) passed through
+        # whole even when they held a home path.
+        from agentperf.privacy import anonymize
+        nested = {"nested": [{"started_at": "/home/Bob/Private Repo/file"}],
+                  "list": [[{"started_at": "C:\\Users\\Bob\\x"}]]}
+        for key in ("corpus", "measurement_env", "scoring_config"):
+            doc = _load("macos-m1-pro")
+            doc.setdefault(key, {})["operator_note"] = copy.deepcopy(nested)
+            doc["benchmarks"]["/Users/Bob/secret"] = copy.deepcopy(
+                doc["benchmarks"]["process.shell"])
+            doc["profile"] = "/Users/Bob/Private Repo"
+            doc["started_at"] = "/home/Bob/Private Repo"
+            text = json.dumps(anonymize(doc)[0])
+            self.assertNotIn("Bob", text, key)
+            self.assertNotIn("Private Repo", text, key)
+        doc = _load("macos-m1-pro")
+        clean, _c = anonymize(copy.deepcopy(doc))
+        self.assertEqual(clean["started_at"], doc["started_at"][:10])
+
+    def test_bundled_share_output_unchanged_by_the_guard(self):
+        from agentperf import scoring
+        from agentperf.privacy import anonymize
+        for name in PROFILES:
+            doc = _load(name)
+            clean, _c = anonymize(copy.deepcopy(doc))
+            self.assertEqual(clean["benchmarks"], doc["benchmarks"], name)
+            for key in ("corpus", "measurement_env", "profile",
+                        "fingerprint", "suite_version"):
+                self.assertEqual(clean.get(key), doc.get(key), (name, key))
+            self.assertEqual(scoring.fingerprint(clean), doc["fingerprint"])
+
+
 class ShellPolicyProvenanceTest(unittest.TestCase):
     """R2: a benchmark taken from one input must not inherit another
     input's measurement_env fallback."""
