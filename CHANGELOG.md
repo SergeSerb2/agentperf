@@ -181,8 +181,12 @@ established (see the shell note).
     result now name the tool, not its path or command line, for timeouts,
     non-zero exits, and OS errors ("bash timed out after 30 s", "[Errno
     13] Permission denied: 'zsh'"), and `share` rewrites the older stored
-    forms of these messages the same way. The progress log on your own
-    screen still prints the full error, for local debugging. A result now records who ran it
+    forms of these messages the same way. Paths inside other tools'
+    errors keep the cause around them ("spawnSync <path>/bash ENOENT",
+    "Unable to create '<path>': No such file or directory"). The progress
+    log on your own screen still prints the full error, for local
+    debugging. The generic label is built from the scrubbed facts, so
+    sharing a shared file gives the same file back. A result now records who ran it
     (`system.user`, `system.home`) so `share` can find that name anywhere,
     even with a work folder outside home; `share` always drops both. A custom login shell from
     `$SHELL` is free text; known shell and tool names stay as written.

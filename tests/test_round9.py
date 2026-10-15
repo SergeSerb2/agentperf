@@ -468,7 +468,7 @@ class ShareFourthReviewTest(unittest.TestCase):
         clean = self._share(skipped={"process.node": 'cannot open '
                                      '"/Users/Bob/x": denied'})
         self.assertEqual(clean["skipped"]["process.node"],
-                         'cannot open "/Users/<user>": denied')
+                         'cannot open "<path>": denied')
 
     def test_single_label_mail_domain(self):
         # R6; "python@3.12" (Homebrew) is not an address.
@@ -785,3 +785,38 @@ class ShareLegacyDiagnosticsTest(unittest.TestCase):
         twice = anonymize(copy.deepcopy(once))[0]
         self.assertEqual(twice["skipped"], once["skipped"])
         self.assertEqual(twice["benchmarks"], once["benchmarks"])
+
+
+class ShareReleaseReviewTest(unittest.TestCase):
+    """Release verification of 8298bcc: real tool errors keep their cause,
+    and sharing is idempotent."""
+
+    def _skip(self, reason, system=None):
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["system"].update(system or {})
+        doc["skipped"] = {"process.node": reason}
+        return anonymize(doc)[0]["skipped"]["process.node"]
+
+    def test_node_spawn_error_keeps_tool_and_code(self):
+        self.assertEqual(self._skip("error: Error: spawnSync /Users/Bob/x/bash ENOENT"),
+                         "error: Error: spawnSync <path>/bash ENOENT")
+        self.assertEqual(self._skip("error: Error: spawnSync /opt/x/bash EACCES"),
+                         "error: Error: spawnSync <path>/bash EACCES")
+
+    def test_git_error_keeps_its_cause(self):
+        self.assertEqual(
+            self._skip("error: git status failed: fatal: Unable to create "
+                       "'/Users/O'Brien/repo/.git/index.lock': No such file or "
+                       "directory"),
+            "error: git status failed: fatal: Unable to create '<path>': "
+            "No such file or directory")
+
+    def test_sharing_is_idempotent_with_a_colliding_host(self):
+        from agentperf.privacy import anonymize
+        for host in ("mac", "apple", "pro", "work"):
+            doc = _load("macos-m1-pro")
+            doc["system"]["hostname"] = host
+            doc["system"]["workdir"] = "/Users/{}/agentperf".format(host)
+            once = anonymize(doc)[0]
+            self.assertEqual(anonymize(copy.deepcopy(once))[0], once, host)

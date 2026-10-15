@@ -344,7 +344,8 @@ _KEPT_BASENAMES = frozenset(("bash", "sh", "zsh", "dash", "fish", "ksh", "tcsh",
 
 _DIAGNOSTIC = re.compile(
     r"(?:exited|failed|returned|timed|not|is|was|were|has|had|does|did|"
-    r"cannot|could|can't|denied|missing|with|code|exit|error|\(|\[|\d)",
+    r"cannot|could|can't|denied|missing|with|code|exit|error|\(|\[|\d"
+    r"|(?-i:E[A-Z]{2,}\b))",  # Node/libuv codes: ENOENT, EACCES
     re.IGNORECASE)
 
 
@@ -373,11 +374,13 @@ def _path_end(text, start):
     return line_end
 
 
-def _generalize_paths(text):
+def _generalize_paths(text, quoted_only=False):
     out, pos = [], 0
     for match in _PATH_START.finditer(text):
         start = match.start()
         if start < pos:
+            continue
+        if quoted_only and not (start and text[start - 1] in "'\""):
             continue
         end = _path_end(text, start)
         token = text[start:end]
@@ -579,11 +582,12 @@ def _scrub_inside_words(text, names, counter=None):
 
 
 def _residual_text(text, names):
+    # A name inside an agentperf word ("mac" in "macOS", "tan" in
+    # "standard") is not identity; inside any other word it is.
     text = unicodedata.normalize("NFC", text)
-    lowered = text.casefold()
-    return _residual_path(text) or any(
-        name.casefold() in lowered if len(name) >= 3
-        else _camel_joined(text, name) for name in names)
+    return _residual_path(text) or _hidden_name(text, [
+        n for n in names if len(n) >= 3]) or any(
+        _camel_joined(text, n) for n in names if len(n) < 3)
 
 
 # --- What share keeps ------------------------------------------------
@@ -695,9 +699,7 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
     names = _candidate_names(out)
     changes: List[str] = []
     old_label = out.get("label")
-    out["label"] = label or _generic_label(out)
-    if old_label != out["label"]:
-        changes.append("label '{}' replaced with '{}'".format(old_label, out["label"]))
+    out["label"] = label or ""  # the generic label is set after the walk
     for key in ("run_id",):
         if out.pop(key, None) is not None:
             changes.append("removed {}".format(key))
@@ -761,9 +763,13 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         return cleaned
 
     def clean_full(value):
+        # Stored error forms first, then absolute paths with the
+        # diagnostic-aware end (so "...index.lock': No such file" and
+        # "spawnSync <path>/bash ENOENT" keep their cause), then the
+        # remaining home forms (~user, UNC), names, and addresses.
+        value = _generalize_paths(_normalize_stored_errors(value))
         cleaned = _generalize_paths(_scrub_inside_words(
-            _scrub_text(_normalize_stored_errors(value), names, counter),
-            names, counter))
+            _scrub_text(value, names, counter), names, counter))
         # Fail closed: a free-text string still identifying after the
         # scrub is withheld whole instead of passing through.
         if _residual_text(cleaned, names):
@@ -855,6 +861,11 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
         return leaf(node, ctx)
 
     out = walk(out, "root")
+    if not label:
+        # From the scrubbed facts, so sharing a shared file gives it back.
+        out["label"] = _generic_label(out)
+    if old_label != out["label"]:
+        changes.append("label '{}' replaced with '{}'".format(old_label, out["label"]))
     if days[0]:
         changes.append("cut {} timestamp(s) to the day".format(days[0]))
     if dropped[0]:
