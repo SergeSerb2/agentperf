@@ -390,7 +390,7 @@ class RemoteOrchestrationTest(unittest.TestCase):
                  "lower_is_better": True, "weight": 1.0, "scored": True,
                  "ops": 1, "median": 1.0, "samples": [1.0], "cv": 0.0,
                  "noisy": False, "meta": {}}
-        return {"label": label,
+        return {"label": label, "profile": "standard",
                 "benchmarks": {"process.shell": entry},
                 "skipped": {}, "system": {},
                 "schema": 1, "corpus": {"fixture_hash": "h"}}

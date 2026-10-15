@@ -18,7 +18,8 @@ def _entry(category, median, lower=True, weight=1.0, scored=True, samples=None, 
 
 
 def _doc(label, benches, system=None):
-    return {"label": label, "benchmarks": benches, "skipped": {}, "system": system or {}}
+    return {"label": label, "profile": "standard", "benchmarks": benches,
+            "skipped": {}, "system": system or {}}
 
 
 REF = _doc("ref", {

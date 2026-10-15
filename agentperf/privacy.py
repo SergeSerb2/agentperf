@@ -240,6 +240,15 @@ _SYSTEM_PATH_KEYS = (
 )
 _TOP_KEEP_KEYS = ("schema", "kind", "suite_version", "package_version",
                   "profile", "fingerprint")
+# Top-level objects the tool writes whole. Their known children are
+# kept verbatim (the shell policy text is classified, the weights and
+# corpus facts feed scoring); unknown children are scrubbed like any
+# other free text.
+_STRUCT_KEEP_KEYS = {
+    "corpus": ("files", "bytes", "fixture_hash"),
+    "measurement_env": ("shell_launch", "node_spawn_diagnostic"),
+    "scoring_config": ("category_weights",),
+}
 _CATEGORIES = ("process", "files", "search", "git", "compute",
                "transfer", "ipc", "network", "diag")
 
@@ -361,9 +370,10 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
                 return "benchmarks"
             if key == "system":
                 return "system"
-            if key in ("corpus", "measurement_env", "scoring_config") \
-                    or key in _TOP_KEEP_KEYS:
+            if key in _TOP_KEEP_KEYS:
                 return "keep"
+            if key in _STRUCT_KEEP_KEYS:
+                return key
             if key in ("tools", "tool_versions"):
                 return "path"
             if key == "reference_profile":
@@ -388,6 +398,10 @@ def anonymize(doc: Dict[str, object], label=None) -> Tuple[Dict[str, object], Li
             return "full"
         if ctx == "refprofile":
             return "keep" if key in ("name", "measured") else "full"
+        if ctx in _STRUCT_KEEP_KEYS:
+            # Only the children the tool writes are structural; anything
+            # else in these objects is unknown text and gets scrubbed.
+            return "keep" if key in _STRUCT_KEEP_KEYS[ctx] else "full"
         return ctx  # keep / path / full propagate into nested values
 
     def scrub(node, ctx):

@@ -38,7 +38,8 @@ def _entry(category, median, lower=True, weight=1.0, scored=True, meta=None):
 
 
 def _doc(label, benches, system=None, **kw):
-    doc = {"label": label, "benchmarks": benches, "skipped": {},
+    doc = {"label": label, "profile": "standard", "benchmarks": benches,
+           "skipped": {},
            "system": system if system is not None else
            {"cpu_model": "Test CPU", "os_family": "linux"},
            "schema": 1, "corpus": {"fixture_hash": "h1"}}

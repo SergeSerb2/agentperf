@@ -146,7 +146,17 @@ established (see the shell note).
     null `weight`, and the like) are rejected up front as clean exit-2
     errors on every command, and fetched remote results must pass the
     same full validation (live fetches must carry interpretable runs).
-    Scores do not move: every bundled profile scores exactly as before.
+    A result must also carry every field reports print (`label`,
+    `profile`, `system`, `skipped`, and each test's `title` and `unit`),
+    so a trimmed file is a clean exit-2 error instead of a crash in
+    `report`. `combine` and `merge` refuse inputs whose shell benchmarks
+    would change policy in the output (the output keeps the first file's
+    `measurement_env`, so a benchmark from another file with a different
+    or unrecorded policy would otherwise be relabelled). `share` keeps
+    only the known fields of `corpus`, `measurement_env`, and
+    `scoring_config` verbatim; anything else in them is scrubbed like
+    other free text. Scores do not move: every bundled profile scores
+    exactly as before.
   - Smaller correctness fixes: a failed launch inside the 32-way
     parallel spawn reaps the shells that did start; a cached tool must
     exit 0 to count as working; every network test records its own TLS

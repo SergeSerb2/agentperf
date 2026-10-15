@@ -477,6 +477,26 @@ def _check_combinable(docs, what: str) -> None:
             seen[bid] = sig
 
 
+def _check_shell_policies_kept(sources, out, what):
+    """Refuse an output that relabels a shell benchmark's policy.
+
+    The output keeps the first input's ``measurement_env``, the fallback
+    for shell benchmarks that carry no ``env_policy`` note of their own.
+    A benchmark taken from another input with a different fallback would
+    silently read as the first input's policy (an unrecorded one as
+    sanitized, say), so each must keep the policy it was measured under.
+    *sources* are the inputs' per-benchmark policies, taken before any
+    input was modified."""
+    for bid, policy in scoring.shell_env_policies(out).items():
+        for source in sources:
+            if bid in source and source[bid] != policy:
+                raise ValueError(
+                    "{} was measured under the {} shell environment policy, "
+                    "but the {}d file would record it as {} (the inputs "
+                    "carry different measurement_env records); refusing to "
+                    "{} them".format(bid, source[bid], what, policy, what))
+
+
 def combine_runs(docs):
     """Median of per-run medians for each benchmark.
 
@@ -509,6 +529,8 @@ def combine_runs(docs):
         entry["run_medians"] = [float(r["median"]) for r in runs]
         entry["runs"] = len(runs)
         entry["noisy"] = stats["cv"] > 0.15
+    _check_shell_policies_kept(
+        [scoring.shell_env_policies(d) for d in docs], combined, "combine")
     combined["combined_runs"] = [{"run_id": d.get("run_id"), "started_at": d.get("started_at")} for d in docs]
     # Preserve the inputs' agreed recorded scoring config (combinability
     # already refused differing configs); never silently substitute
@@ -545,6 +567,7 @@ def cmd_merge(args) -> int:
     """Combine result files of one machine (for example a separate network pass)."""
     docs = [scoring.load(p) for p in args.results]
     _check_combinable(docs, "merge")
+    sources = [scoring.shell_env_policies(d) for d in docs]
     merged = docs[0]
     for doc in docs[1:]:
         merged["benchmarks"].update(doc["benchmarks"])
@@ -556,6 +579,7 @@ def cmd_merge(args) -> int:
         merged.setdefault("merged_runs", []).append(
             {"run_id": doc.get("run_id"), "started_at": doc.get("started_at"),
              "benchmarks": sorted(doc["benchmarks"])})
+    _check_shell_policies_kept(sources, merged, "merge")
     # The merged document measures benchmarks no single input had
     # together; keep its recorded config and fingerprint truthful.
     merged["scoring_config"] = scoring.scoring_config_snapshot(

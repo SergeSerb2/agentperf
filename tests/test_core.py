@@ -20,7 +20,8 @@ def _entry(category, median, lower=True, weight=1.0, scored=True, samples=None, 
 
 
 def _doc(label, benches):
-    return {"label": label, "benchmarks": benches, "skipped": {}, "system": {}}
+    return {"label": label, "profile": "standard", "benchmarks": benches,
+            "skipped": {}, "system": {}}
 
 
 class CorpusTest(unittest.TestCase):

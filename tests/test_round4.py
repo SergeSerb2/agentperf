@@ -25,8 +25,8 @@ def _entry(category, median, lower=True, weight=1.0, scored=True, samples=None, 
 
 
 def _doc(label, benches, system=None):
-    return {"label": label, "benchmarks": benches, "skipped": {},
-            "system": system or {}, "schema": 1, "corpus": {"fixture_hash": "h1"}}
+    return {"label": label, "profile": "standard", "benchmarks": benches,
+            "skipped": {}, "system": system or {}, "schema": 1, "corpus": {"fixture_hash": "h1"}}
 
 
 class WorkdirSafetyTest(unittest.TestCase):

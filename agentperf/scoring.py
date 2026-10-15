@@ -79,9 +79,12 @@ def validate_result(doc, source: str = "result") -> Dict[str, object]:
         for key in ("ops", "cv", "min", "max", "p10", "p90", "n", "runs"):
             if key in entry and not _finite_number(entry[key]):
                 bad("benchmark {!r} has a non-numeric {}".format(bid, key))
-        for key in ("title", "unit", "models"):
-            if key in entry and not isinstance(entry[key], str):
-                bad("benchmark {!r} has a non-text {}".format(bid, key))
+        # Reports print every entry's title and unit.
+        for key in ("title", "unit"):
+            if not isinstance(entry.get(key), str):
+                bad("benchmark {!r} has no text {}".format(bid, key))
+        if "models" in entry and not isinstance(entry["models"], str):
+            bad("benchmark {!r} has a non-text models".format(bid))
         if "meta" in entry and not isinstance(entry["meta"], dict):
             bad("benchmark {!r} has a non-object meta".format(bid))
         run_samples = entry.get("run_samples")
@@ -99,8 +102,14 @@ def validate_result(doc, source: str = "result") -> Dict[str, object]:
                 "scoring_config", "measurement_env", "reference_profile"):
         if key in doc and not isinstance(doc[key], dict):
             bad("field {!r} is not an object".format(key))
-    if "label" in doc and not isinstance(doc["label"], str):
-        bad("field 'label' is not text")
+    # The header fields every report reads must be present, not only
+    # well-typed when present.
+    for key in ("label", "profile"):
+        if not isinstance(doc.get(key), str):
+            bad("field {!r} is missing or not text".format(key))
+    for key in ("system", "skipped"):
+        if not isinstance(doc.get(key), dict):
+            bad("field {!r} is missing or not an object".format(key))
     if "schema" in doc and (not isinstance(doc["schema"], int)
                              or isinstance(doc["schema"], bool)):
         bad("field 'schema' is not a version number")
