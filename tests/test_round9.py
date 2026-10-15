@@ -615,7 +615,9 @@ class ShareSeventhReviewTest(unittest.TestCase):
     def test_diagnostics_survive_path_replacement(self):
         # Q1: the tool and its exit status stay readable.
         self.assertEqual(self._skip("error: /opt/x/bash exited with code 7"),
-                         "error: <path>/bash exited with code 7")
+                         "error: bash exited with code 7")
+        self.assertEqual(self._skip("error: /opt/x/bash failed (exit 7)"),
+                         "error: <path>/bash failed (exit 7)")
         # Something path-like later on the line keeps the path running.
         self.assertNotIn("Sons", self._skip("D:\\Clients\\Acme and Sons\\x exited"))
 
@@ -741,11 +743,45 @@ class ShareFinalReviewTest(unittest.TestCase):
     def test_runner_formats_os_errors_by_tool_name(self):
         import subprocess
         from agentperf.runner import _describe_error
-        try:
-            subprocess.run([os.path.join(tempfile.gettempdir(), "no-such-dir",
-                                         "zsh")])
-        except OSError as exc:
-            self.assertEqual(_describe_error(exc).split("] ", 1)[1],
-                             "{}: 'zsh'".format(exc.strerror))
+        exc = PermissionError(13, "Permission denied", "/Users/Al O'Brien/bin/zsh")
+        self.assertEqual(_describe_error(exc), "[Errno 13] Permission denied: 'zsh'")
         exc = subprocess.TimeoutExpired(["/x/bash"], 29.99993)
         self.assertEqual(_describe_error(exc), "bash timed out after 30 s")
+
+
+class ShareLegacyDiagnosticsTest(unittest.TestCase):
+    """Stored messages from earlier versions keep the tool and the cause,
+    whatever quote style Python used for the path."""
+
+    def test_legacy_messages(self):
+        from agentperf.privacy import _normalize_stored_errors as fix
+        cases = {
+            "error: /Users/Alice Smith/x/zsh exited with code 7":
+                "error: zsh exited with code 7",
+            "error: C:\\Users\\Bob\\Git\\bin\\bash.exe exited with code 1":
+                "error: bash.exe exited with code 1",
+            "error: [Errno 13] Permission denied: \"/Users/Al O'Brien/bin/zsh\"":
+                "error: [Errno 13] Permission denied: 'zsh'",
+            "error: Command '[\"/Users/Al O'Brien/bin/zsh\", '-lc', 'exit']' "
+            "timed out after 30 seconds": "error: zsh timed out after 30 s",
+            "error: Command '['/Users/Bob/bin/bash', '-c', 'true']' returned "
+            "non-zero exit status 2.": "error: bash exited with code 2",
+            "error: [Errno 2] No such file or directory: '/opt/Acme/plan.txt'":
+                "error: [Errno 2] No such file or directory: '<path>'",
+        }
+        for stored, expected in cases.items():
+            self.assertEqual(fix(stored), expected, stored)
+
+    def test_sharing_a_shared_file_changes_nothing(self):
+        from agentperf.privacy import anonymize
+        doc = _load("macos-m1-pro")
+        doc["system"]["workdir"] = "/Users/Alice Smith/agentperf"
+        doc["skipped"] = {
+            "process.shell": "error: /Users/Alice Smith/bin/bash exited with code 7",
+            "process.node": "error: /opt/Acme/node failed (exit 3)",
+            "diag.login_shell": "error: [Errno 13] Permission denied: "
+                                "\"/Users/Al O'Brien/bin/zsh\""}
+        once = anonymize(doc)[0]
+        twice = anonymize(copy.deepcopy(once))[0]
+        self.assertEqual(twice["skipped"], once["skipped"])
+        self.assertEqual(twice["benchmarks"], once["benchmarks"])

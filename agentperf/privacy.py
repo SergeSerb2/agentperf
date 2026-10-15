@@ -413,14 +413,33 @@ def _camel_joined(text, name):
 # seconds", "[Errno 13] Permission denied: '/Users/bob/bin/zsh'") are
 # rewritten to the tool-name form today's runner writes, before any
 # scrubbing, so sharing an old result keeps its diagnosis.
-_STORED_TIMEOUT = re.compile(r"Command '\[(.*?)\]' timed out after ([\d.]+) seconds")
-_STORED_EXIT = re.compile(r"Command '\[(.*?)\]' returned non-zero exit status (-?\d+)\.?")
-_STORED_OSERROR = re.compile(r"(\[Errno -?\d+\] [^:'\n]+): '([^'\n]*)'")
+# A Python string literal in either quote style ("O'Brien" makes Python
+# use double quotes), escapes included.
+_PY_STR = r"""(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")"""
+_STORED_TIMEOUT = re.compile(r"Command '(\[.*?\])' timed out after ([\d.]+) seconds")
+_STORED_EXIT = re.compile(r"Command '(\[.*?\])' returned non-zero exit status (-?\d+)\.?")
+_STORED_OSERROR = re.compile(r"(\[(?:Errno|WinError) -?\d+\] [^:'\"\n]+): (" + _PY_STR + ")")
+# The spawn timer's own message before it named only the tool:
+# "/Users/Alice Smith/bin/zsh exited with code 7".
+_STORED_SPAWN = re.compile(r"(?<![\w<>.:~/\\-])((?:[A-Za-z]:[\\/]|\\\\|/)[^\n]*?)"
+                           r" exited with code (-?\d+)")
+
+
+def _literal(text):
+    import ast
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return None
 
 
 def _tool_of(args):
-    first = re.match(r"\s*'([^'\n]*)'", args)
-    return _tool_name(first.group(1) if first else "")
+    value = _literal(args)
+    if isinstance(value, (list, tuple)) and value and isinstance(value[0], str):
+        return _tool_name(value[0])
+    first = re.match(r"\[\s*(" + _PY_STR + ")", args)
+    value = _literal(first.group(1)) if first else None
+    return _tool_name(value if isinstance(value, str) else "")
 
 
 def _tool_name(path):
@@ -434,8 +453,14 @@ def _normalize_stored_errors(text):
         _tool_of(m.group(1)), round(float(m.group(2)), 1)), text)
     text = _STORED_EXIT.sub(lambda m: "{} exited with code {}".format(
         _tool_of(m.group(1)), m.group(2)), text)
-    return _STORED_OSERROR.sub(lambda m: "{}: '{}'".format(
-        m.group(1), _tool_name(m.group(2))), text)
+    text = _STORED_SPAWN.sub(lambda m: "{} exited with code {}".format(
+        _tool_name(m.group(1)), m.group(2)), text)
+
+    def oserror(m):
+        value = _literal(m.group(2))
+        return "{}: '{}'".format(m.group(1), _tool_name(
+            value if isinstance(value, str) else ""))
+    return _STORED_OSERROR.sub(oserror, text)
 
 
 def _residual_path(text):

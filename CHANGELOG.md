@@ -177,11 +177,12 @@ established (see the shell note).
     absolute path in free text (a skip reason, a probe error) is replaced
     whole, keeping only a tool name such as `bash` and a plain diagnostic
     after it ("<path>/bash exited with code 7"), because a folder such as
-    `D:\Clients\Acme` can name a client. Timeouts, non-zero exits, and
-    OS errors on a tool now report the tool's file name ("bash timed out
-    after 30 s", "[Errno 13] Permission denied: 'zsh'"), never its path or
-    command line, and `share` rewrites the older stored forms of these
-    messages the same way. A result now records who ran it
+    `D:\Clients\Acme` can name a client. Skip reasons stored in a
+    result now name the tool, not its path or command line, for timeouts,
+    non-zero exits, and OS errors ("bash timed out after 30 s", "[Errno
+    13] Permission denied: 'zsh'"), and `share` rewrites the older stored
+    forms of these messages the same way. The progress log on your own
+    screen still prints the full error, for local debugging. A result now records who ran it
     (`system.user`, `system.home`) so `share` can find that name anywhere,
     even with a work folder outside home; `share` always drops both. A custom login shell from
     `$SHELL` is free text; known shell and tool names stay as written.
