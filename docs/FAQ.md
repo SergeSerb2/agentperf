@@ -71,9 +71,9 @@ used different ones. Only compare cold-read numbers between machines that
 used the same method. AgentMark still includes `transfer.read` across
 methods; it is about 2% of the score.
 
-## "103 on Windows vs 1000 in WSL2" - is Windows really 10x slower?
+## Why does the native Windows reference score so low?
 
-That figure is one PC, in October 2026. Each side combines three runs
+The bundled Windows profile (103) is one PC, in October 2026. Each side combines three runs
 (per test, the median of the run medians, then scored). The native side ran as-is: third-party real-time antivirus and the
 Windows Search indexer active, shell commands through Git Bash, and an older
 Python (3.11 against 3.14 in WSL2). The gap is everything that native setup
@@ -82,9 +82,7 @@ Windows install, and it does not say how much is the antivirus alone: that PC
 was never measured with scanning off. A tuned setup (Dev Drive, exclusions
 for code folders) should do better; we have not measured one yet. agentperf
 only recommends WSL2 when your own machine shows the slow pattern. Run it
-natively and see which side of the gap you are on. For scale: the same
-pair's estimated local wait per 100 tool calls is 15.6 s natively against
-about 1.0 s in WSL2.
+natively and see which side of the gap you are on.
 
 ## What is LW100, and why do its parts sum to more than 100?
 

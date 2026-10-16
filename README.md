@@ -110,12 +110,9 @@ for a Windows PC with real-time antivirus.
 | 300 to 550 | Noticeably slower than the reference. Agents often wait on local tools. |
 | Under 300 | Fix the top causes, or run your agents on a different machine. |
 
-Software around the hardware matters a lot. The reference is a desktop PC
-running Ubuntu in WSL2. The same PC, running natively on Windows as-is (with
-third-party real-time antivirus and search indexing), scored 103. That gap
-is one PC with those settings, not a verdict on every Windows install; the
-[FAQ](https://github.com/SergeSerb2/agentperf/blob/main/docs/FAQ.md) spells
-out the conditions.
+The reference is a desktop PC running Ubuntu in WSL2. The software around
+the hardware (security scanning, indexing, your shell setup) often matters
+as much as the chip.
 
 A few things to keep in mind:
 
